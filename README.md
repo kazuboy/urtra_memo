@@ -29,34 +29,6 @@ Ultra Memo は、
 - 同じブラウザ・同じオリジンでデータが維持されます
 - クラウド同期は行いません（ローカル完結）
 
-## ローカルで動かす（開発用）
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-trunk serve
-```
-
-起動後: `http://127.0.0.1:8080`
-
-## GitHub Pages 公開
-
-このリポジトリには Pages デプロイ workflow を設定済みです:
-
-- `.github/workflows/deploy-pages.yml`
-
-手順:
-
-1. `main`（または `master`）へ push
-2. GitHub の `Settings > Pages` で  
-   `Build and deployment: GitHub Actions` を選択
-3. Actions の `Deploy Ultra Memo Web` が成功したら公開URLへアクセス
-
-公開URLのパス:
-
-- `username.github.io` リポジトリ: `/`
-- それ以外: `/<repo-name>/`
-
 ## 向いている用途
 
 - 思いつきを素早く残すメモ
