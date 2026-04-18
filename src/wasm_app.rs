@@ -9,10 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::JsFuture;
 
 const LEGACY_STORAGE_KEY: &str = "ultra_memo.web.state.v1";
+const META_STORAGE_KEY: &str = "ultra_memo.web.meta.v2";
+const WEB_IDB_DB_NAME: &str = "ultra_memo.web.db.v1";
 const MAIN_FOLDER_ID: &str = "main";
 const MAIN_FOLDER_NAME: &str = "Main";
 const TITLE_MAX_PREVIEW_CHARS: usize = 64;
@@ -54,17 +58,141 @@ const ACCENT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
 const SUPPORTED_IMPORT_EXTENSIONS: &[&str] = &[
     "json", "md", "markdown", "txt", "text", "log", "rst", "adoc", "org",
 ];
+const LARGE_STATE_WARNING_BYTES: usize = 3_500_000;
+const LARGE_STATE_DANGER_BYTES: usize = 4_500_000;
 
 static NOTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static FOLDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static IMPORT_RESULT: RefCell<Option<Result<ImportPayload, String>>> = const { RefCell::new(None) };
+    static IDB_LOAD_RESULT: RefCell<Option<Result<String, String>>> = const { RefCell::new(None) };
+    static IDB_SAVE_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
+    static IDB_SAVE_RUNNING: RefCell<bool> = const { RefCell::new(false) };
+    static PERSIST_EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static SIZE_WARN_LEVEL: RefCell<u8> = const { RefCell::new(0) };
+}
+
+#[wasm_bindgen(inline_js = r#"
+async function umOpenDb(dbName) {
+  return await new Promise((resolve, reject) => {
+    const req = indexedDB.open(dbName, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("notes")) {
+        db.createObjectStore("notes", { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains("meta")) {
+        db.createObjectStore("meta", { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
+  });
+}
+
+function umReqToPromise(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("indexedDB request failed"));
+  });
+}
+
+export async function um_idb_save_state(dbName, stateJson) {
+  const parsed = JSON.parse(stateJson);
+  const notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+  delete parsed.notes;
+
+  const db = await umOpenDb(dbName);
+  const tx = db.transaction(["notes", "meta"], "readwrite");
+  const notesStore = tx.objectStore("notes");
+  const metaStore = tx.objectStore("meta");
+
+  const keys = await umReqToPromise(notesStore.getAllKeys());
+  const existing = new Set((keys || []).map((k) => String(k)));
+  const incoming = new Set();
+  for (const note of notes) {
+    if (!note || !note.id) continue;
+    incoming.add(String(note.id));
+    notesStore.put(note);
+  }
+  for (const id of existing) {
+    if (!incoming.has(id)) {
+      notesStore.delete(id);
+    }
+  }
+  metaStore.put({ key: "state_meta", value: parsed, updated_at_ms: Date.now() });
+
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("indexedDB transaction failed"));
+    tx.onabort = () => reject(tx.error || new Error("indexedDB transaction aborted"));
+  });
+  db.close();
+  return notes.length;
+}
+
+export async function um_idb_load_state(dbName) {
+  const db = await umOpenDb(dbName);
+  const tx = db.transaction(["notes", "meta"], "readonly");
+  const notesStore = tx.objectStore("notes");
+  const metaStore = tx.objectStore("meta");
+  const [notes, meta] = await Promise.all([
+    umReqToPromise(notesStore.getAll()),
+    umReqToPromise(metaStore.get("state_meta")),
+  ]);
+
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("indexedDB transaction failed"));
+    tx.onabort = () => reject(tx.error || new Error("indexedDB transaction aborted"));
+  });
+  db.close();
+
+  const base = meta && meta.value ? meta.value : {};
+  base.notes = Array.isArray(notes) ? notes : [];
+  if (!base.folders || !Array.isArray(base.folders)) {
+    base.folders = [];
+  }
+  if (!base.recent_note_ids || !Array.isArray(base.recent_note_ids)) {
+    base.recent_note_ids = [];
+  }
+  return JSON.stringify(base);
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    fn um_idb_save_state(db_name: &str, state_json: &str) -> Result<js_sys::Promise, JsValue>;
+
+    #[wasm_bindgen(catch)]
+    fn um_idb_load_state(db_name: &str) -> Result<js_sys::Promise, JsValue>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct WebState {
     notes: Vec<WebNote>,
+    folders: Vec<WebFolder>,
+    recent_note_ids: Vec<String>,
+    selected_note_id: Option<String>,
+    selected_folder_id: String,
+    search_query: String,
+    show_recent: bool,
+    show_trash: bool,
+    list_sort: WebListSort,
+    markdown_render_mode: bool,
+    focus_mode: bool,
+    list_panel_width: f32,
+    ui_zoom: f32,
+    ui_language: UiLanguage,
+    ui_font_preset: String,
+    ui_text_color_rgb: [u8; 3],
+    ui_background_color_rgb: [u8; 3],
+    ui_accent_color_rgb: [u8; 3],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct WebStateMeta {
     folders: Vec<WebFolder>,
     recent_note_ids: Vec<String>,
     selected_note_id: Option<String>,
@@ -105,6 +233,31 @@ impl Default for WebState {
             ui_text_color_rgb: DEFAULT_TEXT_COLOR_RGB,
             ui_background_color_rgb: DEFAULT_BG_COLOR_RGB,
             ui_accent_color_rgb: DEFAULT_ACCENT_COLOR_RGB,
+        }
+    }
+}
+
+impl Default for WebStateMeta {
+    fn default() -> Self {
+        let state = WebState::default();
+        Self {
+            folders: state.folders,
+            recent_note_ids: state.recent_note_ids,
+            selected_note_id: state.selected_note_id,
+            selected_folder_id: state.selected_folder_id,
+            search_query: state.search_query,
+            show_recent: state.show_recent,
+            show_trash: state.show_trash,
+            list_sort: state.list_sort,
+            markdown_render_mode: state.markdown_render_mode,
+            focus_mode: state.focus_mode,
+            list_panel_width: state.list_panel_width,
+            ui_zoom: state.ui_zoom,
+            ui_language: state.ui_language,
+            ui_font_preset: state.ui_font_preset,
+            ui_text_color_rgb: state.ui_text_color_rgb,
+            ui_background_color_rgb: state.ui_background_color_rgb,
+            ui_accent_color_rgb: state.ui_accent_color_rgb,
         }
     }
 }
@@ -219,6 +372,8 @@ struct WebMemoApp {
     dirty_since_ms: Option<i64>,
     boot_status_cleared: bool,
     fonts_initialized: bool,
+    idb_load_started: bool,
+    defer_empty_note_creation: bool,
     show_folder_manager: bool,
     show_menu: bool,
 }
@@ -239,7 +394,7 @@ impl WebMemoApp {
     }
 
     fn new() -> Self {
-        let mut state = load_state();
+        let (mut state, defer_empty_note_creation) = load_state();
         ensure_state_integrity(&mut state);
         if state.list_panel_width < LIST_PANEL_MIN_WIDTH || state.list_panel_width.is_nan() {
             state.list_panel_width = LIST_PANEL_DEFAULT_WIDTH;
@@ -256,7 +411,7 @@ impl WebMemoApp {
                 state.selected_note_id = state.notes.first().map(|note| note.id.clone());
             }
         }
-        if state.notes.is_empty() {
+        if state.notes.is_empty() && !defer_empty_note_creation {
             let note = make_empty_note_in_folder(&state.selected_folder_id);
             state.selected_note_id = Some(note.id.clone());
             state.notes.push(note);
@@ -279,6 +434,8 @@ impl WebMemoApp {
             dirty_since_ms: None,
             boot_status_cleared: false,
             fonts_initialized: false,
+            idb_load_started: false,
+            defer_empty_note_creation,
             show_folder_manager: false,
             show_menu: false,
         };
@@ -802,7 +959,7 @@ impl WebMemoApp {
                 .to_string();
             return;
         };
-        let base_name = sanitize_file_name(&safe_title(&note.title));
+        let base_name = sanitize_file_name(safe_title(&note.title));
         let file_name = format!("{base_name}.md");
         match download_text_file(&file_name, "text/markdown", &note.body) {
             Ok(()) => {
@@ -867,6 +1024,69 @@ impl WebMemoApp {
             .tr("appearance preset applied", "外観プリセットを適用")
             .to_string();
     }
+
+    fn start_idb_load_if_needed(&mut self) {
+        if self.idb_load_started {
+            return;
+        }
+        self.idb_load_started = true;
+        start_indexeddb_load();
+    }
+
+    fn process_idb_load_result(&mut self) {
+        let Some(result) = take_indexeddb_load_result() else {
+            return;
+        };
+        self.defer_empty_note_creation = false;
+        match result {
+            Ok(raw) => {
+                let Ok(mut loaded) = serde_json::from_str::<WebState>(&raw) else {
+                    self.status_line = self
+                        .tr(
+                            "IndexedDB load failed (invalid data)",
+                            "IndexedDB の読み込みに失敗（データ不正）",
+                        )
+                        .to_string();
+                    return;
+                };
+                ensure_state_integrity(&mut loaded);
+                loaded.list_panel_width = loaded
+                    .list_panel_width
+                    .clamp(LIST_PANEL_MIN_WIDTH, LIST_PANEL_MAX_WIDTH);
+                sort_notes_by_updated_desc(&mut loaded.notes);
+                self.state = loaded;
+                if let Some(note) = selected_note(&self.state) {
+                    self.editor_title = note.title.clone();
+                    self.editor_body = note.body.clone();
+                    self.editor_tags = note.tags.join(" ");
+                } else {
+                    self.editor_title.clear();
+                    self.editor_body.clear();
+                    self.editor_tags.clear();
+                }
+                self.sync_selection_for_current_scope();
+                self.status_line = self
+                    .tr("IndexedDB loaded", "IndexedDB から読み込み完了")
+                    .to_string();
+            }
+            Err(err) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("IndexedDB load failed: {err}"),
+                    UiLanguage::Japanese => format!("IndexedDB 読み込み失敗: {err}"),
+                };
+            }
+        }
+
+        if self.state.notes.is_empty() {
+            self.create_note();
+        }
+    }
+
+    fn process_persist_events(&mut self) {
+        if let Some(event) = take_last_persist_event() {
+            self.status_line = event;
+        }
+    }
 }
 
 impl eframe::App for WebMemoApp {
@@ -879,6 +1099,9 @@ impl eframe::App for WebMemoApp {
             install_web_fonts(ctx);
             self.fonts_initialized = true;
         }
+        self.start_idb_load_if_needed();
+        self.process_idb_load_result();
+        self.process_persist_events();
         self.process_import_result();
         self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
         ctx.set_zoom_factor(self.state.ui_zoom);
@@ -1684,35 +1907,66 @@ fn format_time(ms: i64) -> String {
     }
 }
 
-fn load_state() -> WebState {
+fn load_state() -> (WebState, bool) {
     let Some(storage) = browser_storage() else {
-        return WebState::default();
+        return (WebState::default(), true);
     };
-    let scoped_key = storage_key();
-    if let Ok(Some(raw)) = storage.get_item(&scoped_key) {
-        return serde_json::from_str(&raw).unwrap_or_default();
+
+    let scoped_legacy_key = scoped_storage_key(LEGACY_STORAGE_KEY);
+    if let Ok(Some(raw)) = storage.get_item(&scoped_legacy_key) {
+        return (serde_json::from_str(&raw).unwrap_or_default(), false);
     }
 
     // Backward compatibility: migrate old single-key data to scoped key.
     if let Ok(Some(raw)) = storage.get_item(LEGACY_STORAGE_KEY) {
         let parsed = serde_json::from_str::<WebState>(&raw).unwrap_or_default();
-        let _ = storage.set_item(&scoped_key, &raw);
+        let _ = storage.set_item(&scoped_legacy_key, &raw);
         let _ = storage.remove_item(LEGACY_STORAGE_KEY);
-        return parsed;
+        return (parsed, false);
     }
 
-    WebState::default()
+    let scoped_meta_key = scoped_storage_key(META_STORAGE_KEY);
+    if let Ok(Some(raw)) = storage.get_item(&scoped_meta_key) {
+        let meta = serde_json::from_str::<WebStateMeta>(&raw).unwrap_or_default();
+        return (state_from_meta(meta), true);
+    }
+    if let Ok(Some(raw)) = storage.get_item(META_STORAGE_KEY) {
+        let meta = serde_json::from_str::<WebStateMeta>(&raw).unwrap_or_default();
+        let _ = storage.set_item(&scoped_meta_key, &raw);
+        let _ = storage.remove_item(META_STORAGE_KEY);
+        return (state_from_meta(meta), true);
+    }
+
+    (WebState::default(), true)
 }
 
 fn save_state(state: &WebState) {
+    let Ok(serialized_state) = serde_json::to_string(state) else {
+        push_persist_event("保存失敗: シリアライズに失敗".to_string());
+        return;
+    };
+    maybe_warn_state_size(serialized_state.len());
+
     let Some(storage) = browser_storage() else {
+        queue_indexeddb_save(serialized_state);
         return;
     };
-    let Ok(serialized) = serde_json::to_string(state) else {
-        return;
-    };
-    let key = storage_key();
-    let _ = storage.set_item(&key, &serialized);
+
+    let meta_key = scoped_storage_key(META_STORAGE_KEY);
+    let meta = state_to_meta(state);
+    match serde_json::to_string(&meta) {
+        Ok(serialized_meta) => {
+            if let Err(err) = storage.set_item(&meta_key, &serialized_meta) {
+                push_persist_event(format_storage_error("LocalStorage メタ保存", err));
+            }
+        }
+        Err(_) => {
+            push_persist_event("保存失敗: メタ情報のシリアライズに失敗".to_string());
+        }
+    }
+    let _ = storage.remove_item(&scoped_storage_key(LEGACY_STORAGE_KEY));
+    let _ = storage.remove_item(LEGACY_STORAGE_KEY);
+    queue_indexeddb_save(serialized_state);
 }
 
 fn browser_storage() -> Option<web_sys::Storage> {
@@ -1720,7 +1974,7 @@ fn browser_storage() -> Option<web_sys::Storage> {
     window.local_storage().ok()?
 }
 
-fn storage_key() -> String {
+fn scoped_storage_key(base_key: &str) -> String {
     let scope = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
         .map(|path| {
@@ -1736,7 +1990,170 @@ fn storage_key() -> String {
             }
         })
         .unwrap_or_else(|| "root".to_string());
-    format!("{LEGACY_STORAGE_KEY}:{scope}")
+    format!("{base_key}:{scope}")
+}
+
+fn state_to_meta(state: &WebState) -> WebStateMeta {
+    WebStateMeta {
+        folders: state.folders.clone(),
+        recent_note_ids: state.recent_note_ids.clone(),
+        selected_note_id: state.selected_note_id.clone(),
+        selected_folder_id: state.selected_folder_id.clone(),
+        search_query: state.search_query.clone(),
+        show_recent: state.show_recent,
+        show_trash: state.show_trash,
+        list_sort: state.list_sort,
+        markdown_render_mode: state.markdown_render_mode,
+        focus_mode: state.focus_mode,
+        list_panel_width: state.list_panel_width,
+        ui_zoom: state.ui_zoom,
+        ui_language: state.ui_language,
+        ui_font_preset: state.ui_font_preset.clone(),
+        ui_text_color_rgb: state.ui_text_color_rgb,
+        ui_background_color_rgb: state.ui_background_color_rgb,
+        ui_accent_color_rgb: state.ui_accent_color_rgb,
+    }
+}
+
+fn state_from_meta(meta: WebStateMeta) -> WebState {
+    WebState {
+        notes: Vec::new(),
+        folders: meta.folders,
+        recent_note_ids: meta.recent_note_ids,
+        selected_note_id: meta.selected_note_id,
+        selected_folder_id: meta.selected_folder_id,
+        search_query: meta.search_query,
+        show_recent: meta.show_recent,
+        show_trash: meta.show_trash,
+        list_sort: meta.list_sort,
+        markdown_render_mode: meta.markdown_render_mode,
+        focus_mode: meta.focus_mode,
+        list_panel_width: meta.list_panel_width,
+        ui_zoom: meta.ui_zoom,
+        ui_language: meta.ui_language,
+        ui_font_preset: meta.ui_font_preset,
+        ui_text_color_rgb: meta.ui_text_color_rgb,
+        ui_background_color_rgb: meta.ui_background_color_rgb,
+        ui_accent_color_rgb: meta.ui_accent_color_rgb,
+    }
+}
+
+fn start_indexeddb_load() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = match um_idb_load_state(WEB_IDB_DB_NAME) {
+            Ok(promise) => JsFuture::from(promise)
+                .await
+                .map_err(|err| format_storage_error("IndexedDB 読み込み", err))
+                .and_then(|value| {
+                    value
+                        .as_string()
+                        .ok_or_else(|| "IndexedDB read result is not string".to_string())
+                }),
+            Err(err) => Err(format_storage_error("IndexedDB 読み込み", err)),
+        };
+        IDB_LOAD_RESULT.with(|slot| *slot.borrow_mut() = Some(result));
+    });
+}
+
+fn take_indexeddb_load_result() -> Option<Result<String, String>> {
+    IDB_LOAD_RESULT.with(|slot| slot.borrow_mut().take())
+}
+
+fn queue_indexeddb_save(serialized_state: String) {
+    IDB_SAVE_PENDING.with(|slot| *slot.borrow_mut() = Some(serialized_state));
+    spawn_indexeddb_save_worker_if_needed();
+}
+
+fn spawn_indexeddb_save_worker_if_needed() {
+    let should_start = IDB_SAVE_RUNNING.with(|running| {
+        let mut running = running.borrow_mut();
+        if *running {
+            false
+        } else {
+            *running = true;
+            true
+        }
+    });
+    if !should_start {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            let next = IDB_SAVE_PENDING.with(|slot| slot.borrow_mut().take());
+            let Some(payload) = next else {
+                IDB_SAVE_RUNNING.with(|running| *running.borrow_mut() = false);
+                if IDB_SAVE_PENDING.with(|slot| slot.borrow().is_some()) {
+                    spawn_indexeddb_save_worker_if_needed();
+                }
+                break;
+            };
+            match um_idb_save_state(WEB_IDB_DB_NAME, &payload) {
+                Ok(promise) => {
+                    if let Err(err) = JsFuture::from(promise).await {
+                        push_persist_event(format_storage_error("IndexedDB 保存", err));
+                    }
+                }
+                Err(err) => {
+                    push_persist_event(format_storage_error("IndexedDB 保存", err));
+                }
+            }
+        }
+    });
+}
+
+fn push_persist_event(message: String) {
+    PERSIST_EVENTS.with(|events| events.borrow_mut().push(message));
+}
+
+fn take_last_persist_event() -> Option<String> {
+    PERSIST_EVENTS.with(|events| {
+        let mut events = events.borrow_mut();
+        let last = events.pop();
+        events.clear();
+        last
+    })
+}
+
+fn maybe_warn_state_size(bytes: usize) {
+    let level = if bytes >= LARGE_STATE_DANGER_BYTES {
+        2
+    } else if bytes >= LARGE_STATE_WARNING_BYTES {
+        1
+    } else {
+        0
+    };
+    SIZE_WARN_LEVEL.with(|saved| {
+        let mut saved = saved.borrow_mut();
+        if level > *saved {
+            let mb = bytes as f64 / (1024.0 * 1024.0);
+            if level == 1 {
+                push_persist_event(format!(
+                    "警告: データ量が増加しています ({mb:.2} MB)。保存遅延が発生する可能性があります。"
+                ));
+            } else if level == 2 {
+                push_persist_event(format!(
+                    "警告: データ量がかなり大きいです ({mb:.2} MB)。整理またはエクスポートを推奨。"
+                ));
+            }
+        }
+        *saved = level;
+    });
+}
+
+fn js_error_text(err: JsValue) -> String {
+    if let Some(text) = err.as_string() {
+        return text;
+    }
+    format!("{err:?}")
+}
+
+fn format_storage_error(context: &str, err: JsValue) -> String {
+    let text = js_error_text(err);
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("quota") || lower.contains("quotaexceeded") {
+        return format!("保存失敗: {context} で容量上限に達しました。不要メモ整理を推奨。");
+    }
+    format!("保存失敗: {context} に失敗 ({text})")
 }
 
 fn set_boot_status(message: &str) {

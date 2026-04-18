@@ -38,17 +38,12 @@ pub type NoteSummary = NoteDigest;
 /// Hit item used in search results.
 pub type SearchResult = NoteDigest;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 /// Sort direction for note list queries.
 pub enum SortOrder {
+    #[default]
     UpdatedDesc,
     CreatedDesc,
-}
-
-impl Default for SortOrder {
-    fn default() -> Self {
-        Self::UpdatedDesc
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

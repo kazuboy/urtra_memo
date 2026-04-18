@@ -115,8 +115,34 @@ impl NoteStore {
             bail!("note is deleted and cannot be edited: {id}");
         }
         let note_path = self.paths.note_path(&meta.file_name);
-        fs::write(&note_path, body)
-            .with_context(|| format!("failed to write note body: {}", note_path.display()))?;
+        // Atomic write with backup/restore to minimize loss on crash or IO failure.
+        let temp_path = note_path.with_extension("tmp");
+        let backup_path = note_path.with_extension("bak");
+        fs::write(&temp_path, body)
+            .with_context(|| format!("failed to write temp note body: {}", temp_path.display()))?;
+        if note_path.exists() {
+            let _ = fs::remove_file(&backup_path);
+            fs::rename(&note_path, &backup_path).with_context(|| {
+                format!(
+                    "failed to move note to backup before replace: {}",
+                    note_path.display()
+                )
+            })?;
+        }
+        match fs::rename(&temp_path, &note_path) {
+            Ok(_) => {
+                let _ = fs::remove_file(&backup_path);
+            }
+            Err(err) => {
+                if backup_path.exists() {
+                    let _ = fs::rename(&backup_path, &note_path);
+                }
+                let _ = fs::remove_file(&temp_path);
+                return Err(err).with_context(|| {
+                    format!("failed to replace note body atomically: {}", note_path.display())
+                });
+            }
+        }
 
         let now = now_millis();
         let title = derive_title(body);

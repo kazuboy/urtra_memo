@@ -48,11 +48,8 @@ pub(crate) fn spawn_search_worker(
     thread::spawn(move || {
         let mut loaded_generation = 0u64;
         let mut corpus = Vec::new();
-        loop {
-            let mut req = match rx_req.recv() {
-                Ok(req) => req,
-                Err(_) => break,
-            };
+        while let Ok(req) = rx_req.recv() {
+            let mut req = req;
             while let Ok(next) = rx_req.try_recv() {
                 req = next;
             }
