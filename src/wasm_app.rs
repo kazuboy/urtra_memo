@@ -4,6 +4,7 @@ use eframe::egui;
 use eframe::egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,6 +30,7 @@ const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [138, 136, 228];
 const FONT_PRESET_DEFAULT: &str = "default";
 const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
+const WEB_CJK_FONT_ID: &str = "web_cjk_mplus";
 const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
     ("Ink", [28, 28, 30]),
     ("Slate", [55, 64, 81]),
@@ -216,6 +218,7 @@ struct WebMemoApp {
     status_line: String,
     dirty_since: Option<Instant>,
     boot_status_cleared: bool,
+    fonts_initialized: bool,
     show_folder_manager: bool,
     show_menu: bool,
 }
@@ -274,6 +277,7 @@ impl WebMemoApp {
             status_line: "ready".to_string(),
             dirty_since: None,
             boot_status_cleared: false,
+            fonts_initialized: false,
             show_folder_manager: false,
             show_menu: false,
         };
@@ -867,6 +871,10 @@ impl eframe::App for WebMemoApp {
         if !self.boot_status_cleared {
             set_boot_status("");
             self.boot_status_cleared = true;
+        }
+        if !self.fonts_initialized {
+            install_web_fonts(ctx);
+            self.fonts_initialized = true;
         }
         self.process_import_result();
         self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
@@ -1810,6 +1818,27 @@ fn apply_apple_like_style(
         .text_styles
         .insert(TextStyle::Small, FontId::new(12.0, body_family));
     ctx.set_style(style);
+}
+
+fn install_web_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        WEB_CJK_FONT_ID.to_string(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/MPLUS1p-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, WEB_CJK_FONT_ID.to_string());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, WEB_CJK_FONT_ID.to_string());
+    ctx.set_fonts(fonts);
 }
 
 fn font_preset_options() -> [(&'static str, &'static str); 3] {
