@@ -50,11 +50,3 @@ cargo run -- search "keyword" --limit 20
 cargo run -- today
 cargo run -- rebuild-index
 ```
-
-## プロジェクト分離
-
-太閤立志伝5DXツールは別プロジェクトへ分離済みです:
-
-- `../taiko5dx-tool`
-
-この `Rust` フォルダはメモアプリ専用です。
