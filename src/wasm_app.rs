@@ -15,8 +15,8 @@ use wasm_bindgen::JsValue;
 const LEGACY_STORAGE_KEY: &str = "ultra_memo.web.state.v1";
 const MAIN_FOLDER_ID: &str = "main";
 const MAIN_FOLDER_NAME: &str = "Main";
-const TITLE_MAX_PREVIEW_CHARS: usize = 28;
-const SNIPPET_MAX_PREVIEW_CHARS: usize = 80;
+const TITLE_MAX_PREVIEW_CHARS: usize = 64;
+const TAGS_MAX_PREVIEW_CHARS: usize = 30;
 const AUTOSAVE_DELAY_MS: i64 = 700;
 const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
@@ -211,6 +211,7 @@ pub fn run_web() {
 
 struct WebMemoApp {
     state: WebState,
+    editor_title: String,
     editor_body: String,
     editor_tags: String,
     new_folder_name: String,
@@ -262,14 +263,15 @@ impl WebMemoApp {
             save_state(&state);
         }
 
-        let (editor_body, editor_tags) = if let Some(note) = selected_note(&state) {
-            (note.body.clone(), note.tags.join(" "))
+        let (editor_title, editor_body, editor_tags) = if let Some(note) = selected_note(&state) {
+            (note.title.clone(), note.body.clone(), note.tags.join(" "))
         } else {
-            (String::new(), String::new())
+            (String::new(), String::new(), String::new())
         };
 
         let mut app = Self {
             state,
+            editor_title,
             editor_body,
             editor_tags,
             new_folder_name: String::new(),
@@ -292,6 +294,7 @@ impl WebMemoApp {
         let id = note.id.clone();
         self.state.notes.insert(0, note);
         self.state.selected_note_id = Some(id);
+        self.editor_title.clear();
         self.editor_body.clear();
         self.editor_tags.clear();
         self.status_line = self.tr("new note", "新規メモ").to_string();
@@ -373,9 +376,11 @@ impl WebMemoApp {
         let removed = before.saturating_sub(self.state.notes.len());
         self.sync_selection_for_current_scope();
         if let Some(note) = selected_note(&self.state) {
+            self.editor_title = note.title.clone();
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
         } else {
+            self.editor_title.clear();
             self.editor_body.clear();
             self.editor_tags.clear();
         }
@@ -410,6 +415,7 @@ impl WebMemoApp {
             if !note.deleted {
                 self.touch_recent_note(&note.id);
             }
+            self.editor_title = note.title.clone();
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
         }
@@ -444,14 +450,15 @@ impl WebMemoApp {
         if self.state.notes[index].deleted {
             return false;
         }
+        let normalized_title = self.editor_title.trim().to_string();
         let normalized_tags = normalize_tags(&self.editor_tags);
         let note = &mut self.state.notes[index];
-        if note.body == self.editor_body && note.tags == normalized_tags {
+        if note.title == normalized_title && note.body == self.editor_body && note.tags == normalized_tags {
             return false;
         }
+        note.title = normalized_title;
         note.body = self.editor_body.clone();
         note.tags = normalized_tags;
-        note.title = derive_title(&note.body);
         note.updated_at_ms = now_millis();
         sort_notes_by_updated_desc(&mut self.state.notes);
         true
@@ -1070,33 +1077,39 @@ impl eframe::App for WebMemoApp {
                                 if note.deleted {
                                     title = format!("[{}] {title}", self.tr("Trash", "ゴミ箱"));
                                 }
-                                let snippet = truncate_chars(
-                                    &note
-                                        .body
-                                        .lines()
-                                        .next()
-                                        .unwrap_or_default()
-                                        .replace('\t', " "),
-                                    SNIPPET_MAX_PREVIEW_CHARS,
-                                );
                                 let updated = format_time(note.updated_at_ms);
-                                let tags = if note.tags.is_empty() {
-                                    String::new()
+                                let tags_line = if note.tags.is_empty() {
+                                    "-".to_string()
                                 } else {
-                                    format!("#{}", note.tags.join(" #"))
+                                    truncate_chars(
+                                        &format!("#{}", note.tags.join(" #")),
+                                        TAGS_MAX_PREVIEW_CHARS,
+                                    )
                                 };
 
-                                let text = if tags.is_empty() {
-                                    format!("{title}\n{updated}\n{snippet}")
+                                let visuals = ui.visuals();
+                                let fill = if selected {
+                                    visuals.selection.bg_fill
                                 } else {
-                                    format!("{title}\n{updated}\n{snippet}\n{tags}")
+                                    visuals.widgets.inactive.bg_fill
                                 };
-                                let clicked = ui
-                                    .add_sized(
-                                        [ui.available_width(), 74.0],
-                                        egui::Button::new(text).selected(selected),
-                                    )
-                                    .clicked();
+                                let stroke = if selected {
+                                    visuals.selection.stroke
+                                } else {
+                                    visuals.widgets.inactive.bg_stroke
+                                };
+                                let card = egui::Frame::new()
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .corner_radius(egui::CornerRadius::same(12))
+                                    .inner_margin(egui::Margin::same(10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.add(egui::Label::new(title).truncate());
+                                        ui.add(egui::Label::new(updated).truncate());
+                                        ui.add(egui::Label::new(tags_line).truncate());
+                                    });
+                                let clicked = card.response.interact(egui::Sense::click()).clicked();
                                 if clicked {
                                     self.select_note(note.id.clone());
                                 }
@@ -1141,18 +1154,27 @@ impl eframe::App for WebMemoApp {
                 .cloned()
             else {
                 self.state.selected_note_id = None;
+                self.editor_title.clear();
                 self.editor_body.clear();
                 self.editor_tags.clear();
                 return;
             };
             let selected_is_deleted = selected_note.deleted;
             let folder_options = self.folder_options();
-            let selected_title = truncate_chars(safe_title(&selected_note.title), 64);
             let current_note_folder_id = selected_note.folder_id.clone();
             let mut move_target_folder = current_note_folder_id.clone();
 
             ui.horizontal(|ui| {
-                ui.heading(selected_title);
+                let title_hint = self.tr("Title", "タイトル");
+                let title_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    ui.add_sized(
+                        [280.0, 30.0],
+                        egui::TextEdit::singleline(&mut self.editor_title).hint_text(title_hint),
+                    )
+                });
+                if title_resp.inner.changed() {
+                    self.mark_dirty();
+                }
                 if selected_is_deleted {
                     ui.label(self.tr("(in trash)", "(ゴミ箱内)"));
                 }
