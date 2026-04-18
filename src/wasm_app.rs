@@ -25,7 +25,7 @@ const UI_ZOOM_MIN: f32 = 0.85;
 const UI_ZOOM_MAX: f32 = 1.35;
 const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
 const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
-const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [88, 86, 214];
+const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [138, 136, 228];
 const FONT_PRESET_DEFAULT: &str = "default";
 const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
@@ -45,13 +45,11 @@ const BG_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
 ];
 const ACCENT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
     ("Orange", [255, 149, 0]),
-    ("Indigo", [88, 86, 214]),
+    ("Indigo", [138, 136, 228]),
     ("Teal", [0, 148, 136]),
     ("Green", [52, 199, 89]),
-    ("Pink", [255, 45, 85]),
+    ("Pink", [255, 142, 170]),
 ];
-const PAPER_TEXT_RGB: [u8; 3] = [244, 244, 246];
-const NIGHT_MINT_ACCENT_RGB: [u8; 3] = [82, 196, 170];
 const SUPPORTED_IMPORT_EXTENSIONS: &[&str] = &[
     "json", "md", "markdown", "txt", "text", "log", "rst", "adoc", "org",
 ];
@@ -141,7 +139,6 @@ enum AppearancePreset {
     Classic,
     WarmJournal,
     QuietModern,
-    NightNotes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -778,12 +775,7 @@ impl WebMemoApp {
             AppearancePreset::QuietModern => {
                 self.state.ui_text_color_rgb = [55, 64, 81];
                 self.state.ui_background_color_rgb = [245, 245, 247];
-                self.state.ui_accent_color_rgb = [88, 86, 214];
-            }
-            AppearancePreset::NightNotes => {
-                self.state.ui_text_color_rgb = PAPER_TEXT_RGB;
-                self.state.ui_background_color_rgb = [234, 236, 240];
-                self.state.ui_accent_color_rgb = NIGHT_MINT_ACCENT_RGB;
+                self.state.ui_accent_color_rgb = [138, 136, 228];
             }
         }
         self.status_line = "appearance preset applied".to_string();
@@ -1170,9 +1162,6 @@ impl eframe::App for WebMemoApp {
                         }
                         if ui.button("Quiet Modern").clicked() {
                             self.apply_appearance_preset(AppearancePreset::QuietModern);
-                        }
-                        if ui.button("Night Notes").clicked() {
-                            self.apply_appearance_preset(AppearancePreset::NightNotes);
                         }
                     });
                     egui::ComboBox::from_id_salt("web_font_preset")
