@@ -1,4 +1,5 @@
 # Ultra Memo Web
+<img width="1761" height="1015" alt="image" src="https://github.com/user-attachments/assets/c15568a8-2020-4320-a902-76d5b8b7a23d" />
 
 Ultra Memo は、  
 「一瞬で書けて、一瞬で見つかる」を目指した軽量メモアプリです。
