@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use wasm_bindgen::closure::Closure;
@@ -18,7 +17,7 @@ const MAIN_FOLDER_ID: &str = "main";
 const MAIN_FOLDER_NAME: &str = "Main";
 const TITLE_MAX_PREVIEW_CHARS: usize = 28;
 const SNIPPET_MAX_PREVIEW_CHARS: usize = 80;
-const AUTOSAVE_DELAY: Duration = Duration::from_millis(700);
+const AUTOSAVE_DELAY_MS: i64 = 700;
 const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
@@ -216,7 +215,7 @@ struct WebMemoApp {
     editor_tags: String,
     new_folder_name: String,
     status_line: String,
-    dirty_since: Option<Instant>,
+    dirty_since_ms: Option<i64>,
     boot_status_cleared: bool,
     fonts_initialized: bool,
     show_folder_manager: bool,
@@ -275,7 +274,7 @@ impl WebMemoApp {
             editor_tags,
             new_folder_name: String::new(),
             status_line: "ready".to_string(),
-            dirty_since: None,
+            dirty_since_ms: None,
             boot_status_cleared: false,
             fonts_initialized: false,
             show_folder_manager: false,
@@ -313,7 +312,7 @@ impl WebMemoApp {
         self.state.notes[index].updated_at_ms = now_millis();
         sort_notes_by_updated_desc(&mut self.state.notes);
         self.sync_selection_for_current_scope();
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = self.tr("moved to trash", "ゴミ箱へ移動").to_string();
         save_state(&self.state);
     }
@@ -332,7 +331,7 @@ impl WebMemoApp {
         self.state.notes[index].updated_at_ms = now_millis();
         sort_notes_by_updated_desc(&mut self.state.notes);
         self.sync_selection_for_current_scope();
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = self.tr("restored from trash", "ゴミ箱から復元").to_string();
         save_state(&self.state);
     }
@@ -351,7 +350,7 @@ impl WebMemoApp {
             return;
         }
         self.sync_selection_for_current_scope();
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = self.tr("deleted permanently", "完全削除").to_string();
         save_state(&self.state);
     }
@@ -380,7 +379,7 @@ impl WebMemoApp {
             self.editor_body.clear();
             self.editor_tags.clear();
         }
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = match self.state.ui_language {
             UiLanguage::English => format!("purged {removed} notes"),
             UiLanguage::Japanese => format!("{removed} 件を完全削除"),
@@ -426,7 +425,7 @@ impl WebMemoApp {
     }
 
     fn mark_dirty(&mut self) {
-        self.dirty_since = Some(Instant::now());
+        self.dirty_since_ms = Some(now_millis());
         self.status_line = self.tr("editing...", "編集中...").to_string();
     }
 
@@ -462,21 +461,21 @@ impl WebMemoApp {
         if self.commit_editor_into_selected() {
             save_state(&self.state);
         }
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = self.tr("saved", "保存済み").to_string();
     }
 
     fn autosave_if_needed(&mut self) {
-        let Some(dirty_since) = self.dirty_since else {
+        let Some(dirty_since_ms) = self.dirty_since_ms else {
             return;
         };
-        if dirty_since.elapsed() < AUTOSAVE_DELAY {
+        if now_millis().saturating_sub(dirty_since_ms) < AUTOSAVE_DELAY_MS {
             return;
         }
         if self.commit_editor_into_selected() {
             save_state(&self.state);
         }
-        self.dirty_since = None;
+        self.dirty_since_ms = None;
         self.status_line = self.tr("auto-saved", "自動保存").to_string();
     }
 
