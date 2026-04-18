@@ -1,6 +1,7 @@
 use crate::model::{derive_title, safe_title, truncate_chars};
 use chrono::{TimeZone, Utc};
 use eframe::egui;
+use eframe::egui::{Color32, Stroke};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -390,11 +391,7 @@ impl eframe::App for WebMemoApp {
             set_boot_status("");
             self.boot_status_cleared = true;
         }
-        let mut visuals = egui::Visuals::light();
-        visuals.panel_fill = egui::Color32::from_rgb(244, 244, 246);
-        visuals.window_fill = egui::Color32::from_rgb(244, 244, 246);
-        visuals.override_text_color = Some(egui::Color32::from_rgb(36, 36, 36));
-        ctx.set_visuals(visuals);
+        apply_apple_like_style(ctx);
         self.autosave_if_needed();
 
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
@@ -878,6 +875,50 @@ fn set_boot_status(message: &str) {
         return;
     };
     element.set_text_content(Some(message));
+}
+
+fn apply_apple_like_style(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::light();
+    visuals.override_text_color = Some(Color32::from_rgb(28, 28, 30));
+    visuals.panel_fill = Color32::from_rgb(245, 245, 247);
+    visuals.window_fill = Color32::from_rgb(250, 250, 252);
+    visuals.extreme_bg_color = Color32::from_rgb(238, 239, 243);
+    visuals.faint_bg_color = Color32::from_rgb(243, 244, 247);
+    visuals.code_bg_color = Color32::from_rgb(240, 241, 245);
+    visuals.selection.bg_fill = Color32::from_rgb(0, 122, 255);
+    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(255, 255, 255));
+    visuals.hyperlink_color = Color32::from_rgb(0, 122, 255);
+    visuals.window_stroke = Stroke::new(1.0, Color32::from_rgba_premultiplied(60, 60, 67, 40));
+
+    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(248, 248, 250);
+    visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(60, 60, 67, 30));
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(255, 255, 255);
+    visuals.widgets.inactive.bg_stroke =
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(60, 60, 67, 35));
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(242, 246, 255);
+    visuals.widgets.hovered.bg_stroke =
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 122, 255, 120));
+    visuals.widgets.active.bg_fill = Color32::from_rgb(232, 240, 255);
+    visuals.widgets.active.bg_stroke =
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 122, 255, 180));
+
+    ctx.set_visuals(visuals);
+
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+    style.spacing.button_padding = egui::vec2(12.0, 8.0);
+    style.spacing.menu_margin = egui::Margin::same(8);
+    style.spacing.window_margin = egui::Margin::same(12);
+    style.spacing.indent = 18.0;
+    style.visuals.window_corner_radius = egui::CornerRadius::same(14);
+    style.visuals.menu_corner_radius = egui::CornerRadius::same(12);
+    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(10);
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(12);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(12);
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(12);
+    style.visuals.widgets.open.corner_radius = egui::CornerRadius::same(12);
+    ctx.set_style(style);
 }
 
 fn render_markdown_preview(ui: &mut egui::Ui, body: &str) {
