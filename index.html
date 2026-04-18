@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ultra Memo Web</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #f4f4f6;
+      overflow: hidden;
+    }
+    #the_canvas_id {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #boot_status {
+      position: fixed;
+      left: 12px;
+      top: 10px;
+      font-family: "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: #6a6a6a;
+      z-index: 20;
+      background: rgba(255, 255, 255, 0.85);
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+  </style>
+  <link data-trunk rel="rust" />
+</head>
+<body>
+  <div id="boot_status">Ultra Memo Web: loading...</div>
+  <canvas id="the_canvas_id"></canvas>
+</body>
+</html>

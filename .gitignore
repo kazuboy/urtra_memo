@@ -1,0 +1,14 @@
+/target
+/dist
+/.bench-5k
+/.perf-data
+/workspace
+
+# Local runtime data (native/web dev runs)
+/notes
+/drafts
+/meta.sqlite3
+/state.json
+/clipboard_history.json
+/clipboard_image_history.json
+/clipboard_images
