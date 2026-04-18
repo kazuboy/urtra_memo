@@ -25,6 +25,7 @@ const UI_ZOOM_MIN: f32 = 0.85;
 const UI_ZOOM_MAX: f32 = 1.35;
 const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
 const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
+const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [0, 122, 255];
 const FONT_PRESET_DEFAULT: &str = "default";
 const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
@@ -43,6 +44,16 @@ const BG_COLOR_PRESETS: [(&str, [u8; 3]); 6] = [
     ("Sky", [237, 244, 250]),
     ("Mint", [237, 247, 242]),
     ("Graphite", [234, 236, 240]),
+];
+const ACCENT_COLOR_PRESETS: [(&str, [u8; 3]); 8] = [
+    ("Blue", [0, 122, 255]),
+    ("Indigo", [88, 86, 214]),
+    ("Teal", [0, 148, 136]),
+    ("Green", [52, 199, 89]),
+    ("Orange", [255, 149, 0]),
+    ("Pink", [255, 45, 85]),
+    ("Brown", [162, 132, 94]),
+    ("Slate", [96, 114, 132]),
 ];
 const SUPPORTED_IMPORT_EXTENSIONS: &[&str] = &[
     "json", "md", "markdown", "txt", "text", "log", "rst", "adoc", "org",
@@ -73,6 +84,7 @@ struct WebState {
     ui_font_preset: String,
     ui_text_color_rgb: [u8; 3],
     ui_background_color_rgb: [u8; 3],
+    ui_accent_color_rgb: [u8; 3],
 }
 
 impl Default for WebState {
@@ -94,6 +106,7 @@ impl Default for WebState {
             ui_font_preset: FONT_PRESET_DEFAULT.to_string(),
             ui_text_color_rgb: DEFAULT_TEXT_COLOR_RGB,
             ui_background_color_rgb: DEFAULT_BG_COLOR_RGB,
+            ui_accent_color_rgb: DEFAULT_ACCENT_COLOR_RGB,
         }
     }
 }
@@ -751,6 +764,7 @@ impl eframe::App for WebMemoApp {
             &self.state.ui_font_preset,
             self.state.ui_text_color_rgb,
             self.state.ui_background_color_rgb,
+            self.state.ui_accent_color_rgb,
         );
         self.autosave_if_needed();
 
@@ -1091,6 +1105,7 @@ impl eframe::App for WebMemoApp {
                 });
             });
 
+        let menu_was_open = self.show_menu;
         if self.show_menu {
             let mut open = self.show_menu;
             egui::Window::new("Menu")
@@ -1129,6 +1144,15 @@ impl eframe::App for WebMemoApp {
                             }
                         }
                     });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Accent:");
+                        for (label, rgb) in ACCENT_COLOR_PRESETS {
+                            let selected = self.state.ui_accent_color_rgb == rgb;
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.state.ui_accent_color_rgb = rgb;
+                            }
+                        }
+                    });
                     ui.add(
                         egui::Slider::new(&mut self.state.ui_zoom, UI_ZOOM_MIN..=UI_ZOOM_MAX)
                             .text("UI scale")
@@ -1138,6 +1162,7 @@ impl eframe::App for WebMemoApp {
                         self.state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
                         self.state.ui_text_color_rgb = DEFAULT_TEXT_COLOR_RGB;
                         self.state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
+                        self.state.ui_accent_color_rgb = DEFAULT_ACCENT_COLOR_RGB;
                         self.state.ui_zoom = 1.0;
                     }
 
@@ -1155,6 +1180,8 @@ impl eframe::App for WebMemoApp {
                     ui.small("Import: json/md/markdown/txt/text/log/rst/adoc/org");
                 });
             self.show_menu = open;
+        }
+        if menu_was_open && !self.show_menu {
             save_state(&self.state);
         }
 
@@ -1358,6 +1385,9 @@ fn ensure_state_integrity(state: &mut WebState) {
     if state.ui_background_color_rgb == [0, 0, 0] {
         state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
     }
+    if state.ui_accent_color_rgb == [0, 0, 0] {
+        state.ui_accent_color_rgb = DEFAULT_ACCENT_COLOR_RGB;
+    }
 }
 
 fn selected_note(state: &WebState) -> Option<&WebNote> {
@@ -1497,12 +1527,18 @@ fn apply_apple_like_style(
     font_preset: &str,
     text_color_rgb: [u8; 3],
     background_color_rgb: [u8; 3],
+    accent_color_rgb: [u8; 3],
 ) {
     let text_color = Color32::from_rgb(text_color_rgb[0], text_color_rgb[1], text_color_rgb[2]);
     let bg_color = Color32::from_rgb(
         background_color_rgb[0],
         background_color_rgb[1],
         background_color_rgb[2],
+    );
+    let accent_color = Color32::from_rgb(
+        accent_color_rgb[0],
+        accent_color_rgb[1],
+        accent_color_rgb[2],
     );
     let mut visuals = egui::Visuals::light();
     visuals.override_text_color = Some(text_color);
@@ -1511,9 +1547,9 @@ fn apply_apple_like_style(
     visuals.extreme_bg_color = Color32::from_rgb(238, 239, 243);
     visuals.faint_bg_color = Color32::from_rgb(243, 244, 247);
     visuals.code_bg_color = Color32::from_rgb(240, 241, 245);
-    visuals.selection.bg_fill = Color32::from_rgb(0, 122, 255);
+    visuals.selection.bg_fill = accent_color;
     visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(255, 255, 255));
-    visuals.hyperlink_color = Color32::from_rgb(0, 122, 255);
+    visuals.hyperlink_color = accent_color;
     visuals.window_stroke = Stroke::new(1.0, Color32::from_rgba_premultiplied(60, 60, 67, 40));
 
     visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(248, 248, 250);
@@ -1523,11 +1559,25 @@ fn apply_apple_like_style(
     visuals.widgets.inactive.bg_stroke =
         Stroke::new(1.0, Color32::from_rgba_premultiplied(60, 60, 67, 35));
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(242, 246, 255);
-    visuals.widgets.hovered.bg_stroke =
-        Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 122, 255, 120));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(
+        1.0,
+        Color32::from_rgba_premultiplied(
+            accent_color_rgb[0],
+            accent_color_rgb[1],
+            accent_color_rgb[2],
+            120,
+        ),
+    );
     visuals.widgets.active.bg_fill = Color32::from_rgb(232, 240, 255);
-    visuals.widgets.active.bg_stroke =
-        Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 122, 255, 180));
+    visuals.widgets.active.bg_stroke = Stroke::new(
+        1.0,
+        Color32::from_rgba_premultiplied(
+            accent_color_rgb[0],
+            accent_color_rgb[1],
+            accent_color_rgb[2],
+            180,
+        ),
+    );
 
     ctx.set_visuals(visuals);
 
