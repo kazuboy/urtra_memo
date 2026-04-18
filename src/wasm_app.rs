@@ -1,13 +1,16 @@
 use crate::model::{derive_title, safe_title, truncate_chars};
 use chrono::{TimeZone, Utc};
 use eframe::egui;
-use eframe::egui::{Color32, Stroke};
+use eframe::egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 const LEGACY_STORAGE_KEY: &str = "ultra_memo.web.state.v1";
 const MAIN_FOLDER_ID: &str = "main";
@@ -18,21 +21,58 @@ const AUTOSAVE_DELAY: Duration = Duration::from_millis(700);
 const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
+const UI_ZOOM_MIN: f32 = 0.85;
+const UI_ZOOM_MAX: f32 = 1.35;
+const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
+const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
+const FONT_PRESET_DEFAULT: &str = "default";
+const FONT_PRESET_SERIF: &str = "serif";
+const FONT_PRESET_MONO: &str = "mono";
+const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 6] = [
+    ("Ink", [28, 28, 30]),
+    ("Slate", [55, 64, 81]),
+    ("Blue", [17, 62, 128]),
+    ("Green", [23, 97, 72]),
+    ("Brown", [109, 70, 41]),
+    ("Wine", [121, 34, 57]),
+];
+const BG_COLOR_PRESETS: [(&str, [u8; 3]); 6] = [
+    ("Mist", [245, 245, 247]),
+    ("Paper", [252, 252, 252]),
+    ("Warm", [247, 243, 234]),
+    ("Sky", [237, 244, 250]),
+    ("Mint", [237, 247, 242]),
+    ("Graphite", [234, 236, 240]),
+];
+const SUPPORTED_IMPORT_EXTENSIONS: &[&str] = &[
+    "json", "md", "markdown", "txt", "text", "log", "rst", "adoc", "org",
+];
 
 static NOTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static FOLDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+thread_local! {
+    static IMPORT_RESULT: RefCell<Option<Result<ImportPayload, String>>> = const { RefCell::new(None) };
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct WebState {
     notes: Vec<WebNote>,
     folders: Vec<WebFolder>,
+    recent_note_ids: Vec<String>,
     selected_note_id: Option<String>,
     selected_folder_id: String,
     search_query: String,
+    show_recent: bool,
+    show_trash: bool,
+    list_sort: WebListSort,
     markdown_render_mode: bool,
     focus_mode: bool,
     list_panel_width: f32,
+    ui_zoom: f32,
+    ui_font_preset: String,
+    ui_text_color_rgb: [u8; 3],
+    ui_background_color_rgb: [u8; 3],
 }
 
 impl Default for WebState {
@@ -40,12 +80,20 @@ impl Default for WebState {
         Self {
             notes: Vec::new(),
             folders: vec![main_folder()],
+            recent_note_ids: Vec::new(),
             selected_note_id: None,
             selected_folder_id: MAIN_FOLDER_ID.to_string(),
             search_query: String::new(),
+            show_recent: false,
+            show_trash: false,
+            list_sort: WebListSort::UpdatedDesc,
             markdown_render_mode: false,
             focus_mode: false,
             list_panel_width: LIST_PANEL_DEFAULT_WIDTH,
+            ui_zoom: 1.0,
+            ui_font_preset: FONT_PRESET_DEFAULT.to_string(),
+            ui_text_color_rgb: DEFAULT_TEXT_COLOR_RGB,
+            ui_background_color_rgb: DEFAULT_BG_COLOR_RGB,
         }
     }
 }
@@ -56,6 +104,8 @@ struct WebNote {
     title: String,
     body: String,
     tags: Vec<String>,
+    #[serde(default)]
+    deleted: bool,
     #[serde(default = "default_main_folder_id")]
     folder_id: String,
     created_at_ms: i64,
@@ -67,6 +117,27 @@ struct WebFolder {
     id: String,
     name: String,
     created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+enum WebListSort {
+    #[default]
+    UpdatedDesc,
+    CreatedDesc,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebExportBundle {
+    version: u32,
+    exported_at_ms: i64,
+    folders: Vec<WebFolder>,
+    notes: Vec<WebNote>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportPayload {
+    file_name: String,
+    content: String,
 }
 
 pub fn run_web() {
@@ -122,6 +193,7 @@ struct WebMemoApp {
     dirty_since: Option<Instant>,
     boot_status_cleared: bool,
     show_folder_manager: bool,
+    show_menu: bool,
 }
 
 impl WebMemoApp {
@@ -165,13 +237,16 @@ impl WebMemoApp {
             dirty_since: None,
             boot_status_cleared: false,
             show_folder_manager: false,
+            show_menu: false,
         };
-        app.sync_selection_for_active_folder();
+        app.sync_selection_for_current_scope();
         app
     }
 
     fn create_note(&mut self) {
         self.flush_editor_now();
+        self.state.show_recent = false;
+        self.state.show_trash = false;
         let note = make_empty_note_in_folder(&self.state.selected_folder_id);
         let id = note.id.clone();
         self.state.notes.insert(0, note);
@@ -186,16 +261,76 @@ impl WebMemoApp {
         let Some(id) = self.state.selected_note_id.clone() else {
             return;
         };
-        self.state.notes.retain(|note| note.id != id);
-        if self.state.notes.is_empty() {
-            let note = make_empty_note_in_folder(&self.state.selected_folder_id);
-            self.state.selected_note_id = Some(note.id.clone());
-            self.editor_body.clear();
-            self.editor_tags.clear();
-            self.state.notes.push(note);
-        } else {
-            self.sync_selection_for_active_folder();
+        let Some(index) = self.state.notes.iter().position(|note| note.id == id) else {
+            return;
+        };
+        if self.state.notes[index].deleted {
+            return;
         }
+        self.state.notes[index].deleted = true;
+        self.state.notes[index].updated_at_ms = now_millis();
+        sort_notes_by_updated_desc(&mut self.state.notes);
+        self.sync_selection_for_current_scope();
+        self.dirty_since = None;
+        self.status_line = "moved to trash".to_string();
+        save_state(&self.state);
+    }
+
+    fn restore_selected_note(&mut self) {
+        let Some(id) = self.state.selected_note_id.clone() else {
+            return;
+        };
+        let Some(index) = self.state.notes.iter().position(|note| note.id == id) else {
+            return;
+        };
+        if !self.state.notes[index].deleted {
+            return;
+        }
+        self.state.notes[index].deleted = false;
+        self.state.notes[index].updated_at_ms = now_millis();
+        sort_notes_by_updated_desc(&mut self.state.notes);
+        self.sync_selection_for_current_scope();
+        self.dirty_since = None;
+        self.status_line = "restored from trash".to_string();
+        save_state(&self.state);
+    }
+
+    fn purge_selected_note(&mut self) {
+        let Some(id) = self.state.selected_note_id.clone() else {
+            return;
+        };
+        if !self.selected_note_is_deleted() {
+            return;
+        }
+        let before = self.state.notes.len();
+        self.state.notes.retain(|note| note.id != id);
+        self.state.recent_note_ids.retain(|note_id| note_id != &id);
+        if self.state.notes.len() == before {
+            return;
+        }
+        self.sync_selection_for_current_scope();
+        self.dirty_since = None;
+        self.status_line = "deleted permanently".to_string();
+        save_state(&self.state);
+    }
+
+    fn purge_all_deleted(&mut self) {
+        let before = self.state.notes.len();
+        let deleted_ids: Vec<String> = self
+            .state
+            .notes
+            .iter()
+            .filter(|note| note.deleted)
+            .map(|note| note.id.clone())
+            .collect();
+        self.state.notes.retain(|note| !note.deleted);
+        if !deleted_ids.is_empty() {
+            self.state
+                .recent_note_ids
+                .retain(|id| !deleted_ids.iter().any(|deleted| deleted == id));
+        }
+        let removed = before.saturating_sub(self.state.notes.len());
+        self.sync_selection_for_current_scope();
         if let Some(note) = selected_note(&self.state) {
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
@@ -204,7 +339,7 @@ impl WebMemoApp {
             self.editor_tags.clear();
         }
         self.dirty_since = None;
-        self.status_line = "deleted".to_string();
+        self.status_line = format!("purged {removed} notes");
         save_state(&self.state);
     }
 
@@ -214,7 +349,10 @@ impl WebMemoApp {
         }
         self.flush_editor_now();
         self.state.selected_folder_id = folder_id;
-        self.sync_selection_for_active_folder();
+        if self.state.show_trash {
+            self.state.show_trash = false;
+        }
+        self.sync_selection_for_current_scope();
         save_state(&self.state);
     }
 
@@ -224,9 +362,21 @@ impl WebMemoApp {
         }
         self.flush_editor_now();
         self.state.selected_note_id = Some(note_id);
-        if let Some(note) = selected_note(&self.state) {
+        if let Some(note) = selected_note(&self.state).cloned() {
+            if !note.deleted {
+                self.touch_recent_note(&note.id);
+            }
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
+        }
+    }
+
+    fn touch_recent_note(&mut self, note_id: &str) {
+        self.state.recent_note_ids.retain(|id| id != note_id);
+        self.state.recent_note_ids.insert(0, note_id.to_string());
+        const RECENT_LIMIT: usize = 300;
+        if self.state.recent_note_ids.len() > RECENT_LIMIT {
+            self.state.recent_note_ids.truncate(RECENT_LIMIT);
         }
     }
 
@@ -242,9 +392,17 @@ impl WebMemoApp {
         let Some(selected_id) = self.state.selected_note_id.clone() else {
             return false;
         };
-        let Some(index) = self.state.notes.iter().position(|note| note.id == selected_id) else {
+        let Some(index) = self
+            .state
+            .notes
+            .iter()
+            .position(|note| note.id == selected_id)
+        else {
             return false;
         };
+        if self.state.notes[index].deleted {
+            return false;
+        }
         let normalized_tags = normalize_tags(&self.editor_tags);
         let note = &mut self.state.notes[index];
         if note.body == self.editor_body && note.tags == normalized_tags {
@@ -282,23 +440,76 @@ impl WebMemoApp {
 
     fn filtered_note_ids(&self) -> Vec<String> {
         let query = self.state.search_query.trim().to_lowercase();
-        if query.is_empty() {
-            return self
-                .state
-                .notes
-                .iter()
-                .filter(|note| note.folder_id == self.state.selected_folder_id)
-                .map(|note| note.id.clone())
-                .collect();
-        }
-        let terms: Vec<&str> = query.split_whitespace().collect();
-        self.state
+        let terms: Vec<&str> = if query.is_empty() {
+            Vec::new()
+        } else {
+            query.split_whitespace().collect()
+        };
+        let mut items: Vec<&WebNote> = self
+            .state
             .notes
             .iter()
-            .filter(|note| note.folder_id == self.state.selected_folder_id)
-            .filter(|note| note_matches_query(note, &terms))
-            .map(|note| note.id.clone())
-            .collect()
+            .filter(|note| self.note_matches_current_scope(note))
+            .filter(|note| terms.is_empty() || note_matches_query(note, &terms))
+            .collect();
+
+        if self.state.show_recent {
+            let rank = self.recent_rank_map();
+            items.sort_by(|a, b| {
+                let a_rank = rank.get(&a.id).copied().unwrap_or(usize::MAX);
+                let b_rank = rank.get(&b.id).copied().unwrap_or(usize::MAX);
+                a_rank.cmp(&b_rank)
+            });
+        } else {
+            match self.state.list_sort {
+                WebListSort::UpdatedDesc => {
+                    items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+                }
+                WebListSort::CreatedDesc => {
+                    items.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+                }
+            }
+        }
+
+        items.into_iter().map(|note| note.id.clone()).collect()
+    }
+
+    fn recent_rank_map(&self) -> std::collections::HashMap<String, usize> {
+        let mut map = std::collections::HashMap::new();
+        for (idx, id) in self.state.recent_note_ids.iter().enumerate() {
+            map.insert(id.clone(), idx);
+        }
+        map
+    }
+
+    fn note_matches_current_scope(&self, note: &WebNote) -> bool {
+        if self.state.show_trash {
+            return note.deleted;
+        }
+        if note.deleted {
+            return false;
+        }
+        if self.state.show_recent {
+            return self.state.recent_note_ids.iter().any(|id| id == &note.id);
+        }
+        note.folder_id == self.state.selected_folder_id
+    }
+
+    fn set_list_mode(&mut self, show_recent: bool, show_trash: bool) {
+        if self.state.show_recent == show_recent && self.state.show_trash == show_trash {
+            return;
+        }
+        self.flush_editor_now();
+        self.state.show_recent = show_recent;
+        self.state.show_trash = show_trash;
+        self.sync_selection_for_current_scope();
+        save_state(&self.state);
+    }
+
+    fn selected_note_is_deleted(&self) -> bool {
+        selected_note(&self.state)
+            .map(|note| note.deleted)
+            .unwrap_or(false)
     }
 
     fn active_folder_name(&self) -> String {
@@ -357,14 +568,14 @@ impl WebMemoApp {
         self.status_line = "folder created".to_string();
     }
 
-    fn sync_selection_for_active_folder(&mut self) {
-        let selected_in_folder = self.state.selected_note_id.as_ref().is_some_and(|id| {
+    fn sync_selection_for_current_scope(&mut self) {
+        let selected_in_scope = self.state.selected_note_id.as_ref().is_some_and(|id| {
             self.state
                 .notes
                 .iter()
-                .any(|note| note.id == *id && note.folder_id == self.state.selected_folder_id)
+                .any(|note| note.id == *id && self.note_matches_current_scope(note))
         });
-        if selected_in_folder {
+        if selected_in_scope {
             return;
         }
 
@@ -372,7 +583,7 @@ impl WebMemoApp {
             .state
             .notes
             .iter()
-            .find(|note| note.folder_id == self.state.selected_folder_id)
+            .find(|note| self.note_matches_current_scope(note))
             .map(|note| note.id.clone());
 
         if let Some(note) = selected_note(&self.state) {
@@ -383,6 +594,147 @@ impl WebMemoApp {
             self.editor_tags.clear();
         }
     }
+
+    fn process_import_result(&mut self) {
+        let Some(result) = take_import_result() else {
+            return;
+        };
+        match result {
+            Ok(payload) => self.import_payload(payload),
+            Err(err) => self.status_line = format!("Import failed: {err}"),
+        }
+    }
+
+    fn import_payload(&mut self, payload: ImportPayload) {
+        self.flush_editor_now();
+        let ext = extension_from_name(&payload.file_name);
+        if ext.as_deref() == Some("json") {
+            if self.try_import_json_bundle(&payload.content) {
+                return;
+            }
+            self.status_line =
+                "JSON format is not supported. Use Ultra Memo Web export JSON.".to_string();
+            return;
+        }
+        self.import_as_single_note(&payload.file_name, &payload.content);
+    }
+
+    fn try_import_json_bundle(&mut self, raw: &str) -> bool {
+        let bundle = if let Ok(bundle) = serde_json::from_str::<WebExportBundle>(raw) {
+            bundle
+        } else if let Ok(state) = serde_json::from_str::<WebState>(raw) {
+            WebExportBundle {
+                version: 0,
+                exported_at_ms: now_millis(),
+                folders: state.folders,
+                notes: state.notes,
+            }
+        } else {
+            return false;
+        };
+        let mut created = 0usize;
+        let mut updated = 0usize;
+        for folder in bundle.folders {
+            if folder.id.trim().is_empty() || folder.name.trim().is_empty() {
+                continue;
+            }
+            if self.state.folders.iter().any(|f| f.id == folder.id) {
+                continue;
+            }
+            self.state.folders.push(folder);
+        }
+        for mut note in bundle.notes {
+            if note.id.trim().is_empty() {
+                continue;
+            }
+            if note.folder_id.trim().is_empty() {
+                note.folder_id = MAIN_FOLDER_ID.to_string();
+            }
+            if !self.state.folders.iter().any(|f| f.id == note.folder_id) {
+                note.folder_id = MAIN_FOLDER_ID.to_string();
+            }
+            if let Some(idx) = self.state.notes.iter().position(|n| n.id == note.id) {
+                self.state.notes[idx] = note;
+                updated += 1;
+            } else {
+                self.state.notes.push(note);
+                created += 1;
+            }
+        }
+        ensure_state_integrity(&mut self.state);
+        sort_notes_by_updated_desc(&mut self.state.notes);
+        self.sync_selection_for_current_scope();
+        save_state(&self.state);
+        self.status_line = format!("imported {created} new, {updated} updated notes");
+        true
+    }
+
+    fn import_as_single_note(&mut self, file_name: &str, content: &str) {
+        let now = now_millis();
+        let id = format!("n{now}-{}", NOTE_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        let body = content.replace("\r\n", "\n");
+        let mut title = derive_title(&body);
+        if title.trim().is_empty() {
+            title = trim_file_name(file_name);
+        }
+        let note = WebNote {
+            id: id.clone(),
+            title,
+            body,
+            tags: Vec::new(),
+            deleted: false,
+            folder_id: self.state.selected_folder_id.clone(),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        self.state.show_recent = false;
+        self.state.show_trash = false;
+        self.state.notes.insert(0, note);
+        self.state.selected_note_id = Some(id);
+        self.sync_selection_for_current_scope();
+        save_state(&self.state);
+        self.status_line = format!("imported '{file_name}'");
+    }
+
+    fn export_json_all(&mut self) {
+        self.flush_editor_now();
+        let payload = WebExportBundle {
+            version: 1,
+            exported_at_ms: now_millis(),
+            folders: self.state.folders.clone(),
+            notes: self.state.notes.clone(),
+        };
+        match serde_json::to_string_pretty(&payload) {
+            Ok(json) => {
+                match download_text_file("ultra-memo-export.json", "application/json", &json) {
+                    Ok(()) => self.status_line = "exported JSON".to_string(),
+                    Err(err) => self.status_line = format!("export failed: {err}"),
+                }
+            }
+            Err(err) => self.status_line = format!("export failed: {err}"),
+        }
+    }
+
+    fn export_selected_markdown(&mut self) {
+        self.flush_editor_now();
+        let Some(note) = selected_note(&self.state) else {
+            self.status_line = "no selected note".to_string();
+            return;
+        };
+        let base_name = sanitize_file_name(&safe_title(&note.title));
+        let file_name = format!("{base_name}.md");
+        match download_text_file(&file_name, "text/markdown", &note.body) {
+            Ok(()) => self.status_line = format!("exported {file_name}"),
+            Err(err) => self.status_line = format!("export failed: {err}"),
+        }
+    }
+
+    fn open_import_picker(&mut self) {
+        match start_import_picker() {
+            Ok(()) => self.status_line = "choose a file to import".to_string(),
+            Err(err) => self.status_line = format!("import dialog failed: {err}"),
+        }
+    }
 }
 
 impl eframe::App for WebMemoApp {
@@ -391,15 +743,24 @@ impl eframe::App for WebMemoApp {
             set_boot_status("");
             self.boot_status_cleared = true;
         }
-        apply_apple_like_style(ctx);
+        self.process_import_result();
+        self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
+        ctx.set_zoom_factor(self.state.ui_zoom);
+        apply_apple_like_style(
+            ctx,
+            &self.state.ui_font_preset,
+            self.state.ui_text_color_rgb,
+            self.state.ui_background_color_rgb,
+        );
         self.autosave_if_needed();
 
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let search_width = (ui.available_width() - 240.0).max(140.0);
+                let search_width = (ui.available_width() - 340.0).max(140.0);
                 let search = ui.add_sized(
                     [search_width, 30.0],
-                    egui::TextEdit::singleline(&mut self.state.search_query).hint_text("Search or #tag"),
+                    egui::TextEdit::singleline(&mut self.state.search_query)
+                        .hint_text("Search or #tag"),
                 );
                 if search.changed() {
                     self.status_line = "search updated".to_string();
@@ -409,6 +770,9 @@ impl eframe::App for WebMemoApp {
                 }
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
                 ui.toggle_value(&mut self.state.focus_mode, "Focus");
+                if ui.button("Menu").clicked() {
+                    self.show_menu = true;
+                }
             });
         });
 
@@ -420,33 +784,148 @@ impl eframe::App for WebMemoApp {
                 .default_width(self.state.list_panel_width)
                 .show(ctx, |ui| {
                     self.state.list_panel_width = ui.max_rect().width();
+                    let all_count = self
+                        .state
+                        .notes
+                        .iter()
+                        .filter(|note| {
+                            !note.deleted && note.folder_id == self.state.selected_folder_id
+                        })
+                        .count();
+                    let recent_count = self
+                        .state
+                        .recent_note_ids
+                        .iter()
+                        .filter(|id| {
+                            self.state
+                                .notes
+                                .iter()
+                                .any(|note| &note.id == *id && !note.deleted)
+                        })
+                        .count();
+                    let trash_count = self.state.notes.iter().filter(|note| note.deleted).count();
+
                     ui.horizontal(|ui| {
-                        ui.label(format!("Folder: {}", self.active_folder_name()));
-                        if ui.small_button("Folders").clicked() {
-                            self.show_folder_manager = true;
-                        }
-                        if self.state.selected_folder_id != MAIN_FOLDER_ID
-                            && ui.small_button("Main").clicked()
+                        let all_selected = !self.state.show_recent && !self.state.show_trash;
+                        if ui
+                            .selectable_label(all_selected, format!("All ({all_count})"))
+                            .clicked()
                         {
-                            self.set_active_folder(MAIN_FOLDER_ID.to_string());
+                            self.set_list_mode(false, false);
+                        }
+                        if ui
+                            .selectable_label(
+                                self.state.show_recent,
+                                format!("Recent ({recent_count})"),
+                            )
+                            .clicked()
+                        {
+                            self.set_list_mode(true, false);
+                        }
+                        if ui
+                            .selectable_label(
+                                self.state.show_trash,
+                                format!("Trash ({trash_count})"),
+                            )
+                            .clicked()
+                        {
+                            self.set_list_mode(false, true);
                         }
                     });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Sort:");
+                        ui.add_enabled_ui(!self.state.show_recent, |ui| {
+                            if ui
+                                .selectable_label(
+                                    matches!(self.state.list_sort, WebListSort::UpdatedDesc),
+                                    "Updated",
+                                )
+                                .clicked()
+                            {
+                                self.state.list_sort = WebListSort::UpdatedDesc;
+                                save_state(&self.state);
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(self.state.list_sort, WebListSort::CreatedDesc),
+                                    "Created",
+                                )
+                                .clicked()
+                            {
+                                self.state.list_sort = WebListSort::CreatedDesc;
+                                save_state(&self.state);
+                            }
+                        });
+                        if self.state.show_recent {
+                            ui.small("(Recent keeps open order)");
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        let can_use_folder = !self.state.show_trash && !self.state.show_recent;
+                        if can_use_folder {
+                            ui.label(format!("Folder: {}", self.active_folder_name()));
+                        } else {
+                            ui.label("Folder: all");
+                        }
+                        ui.add_enabled_ui(can_use_folder, |ui| {
+                            if ui.small_button("Folders").clicked() {
+                                self.show_folder_manager = true;
+                            }
+                            if self.state.selected_folder_id != MAIN_FOLDER_ID
+                                && ui.small_button("Main").clicked()
+                            {
+                                self.set_active_folder(MAIN_FOLDER_ID.to_string());
+                            }
+                        });
+                        if self.state.show_trash && ui.small_button("Empty Trash").clicked() {
+                            self.purge_all_deleted();
+                        }
+                    });
+
                     let ids = self.filtered_note_ids();
-                    ui.label(format!("Notes: {}", ids.len()));
+                    let list_name = if self.state.show_trash {
+                        "Trash"
+                    } else if self.state.show_recent {
+                        "Recent"
+                    } else {
+                        "All"
+                    };
+                    let scope_total = if self.state.show_trash {
+                        trash_count
+                    } else if self.state.show_recent {
+                        recent_count
+                    } else {
+                        all_count
+                    };
+                    ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                     ui.separator();
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for note_id in ids {
-                                let Some(note) = self.state.notes.iter().find(|n| n.id == note_id) else {
+                                let Some(note) = self.state.notes.iter().find(|n| n.id == note_id)
+                                else {
                                     continue;
                                 };
-                                let selected =
-                                    self.state.selected_note_id.as_deref() == Some(note.id.as_str());
-                                let title = truncate_chars(safe_title(&note.title), TITLE_MAX_PREVIEW_CHARS);
+                                let selected = self.state.selected_note_id.as_deref()
+                                    == Some(note.id.as_str());
+                                let mut title = truncate_chars(
+                                    safe_title(&note.title),
+                                    TITLE_MAX_PREVIEW_CHARS,
+                                );
+                                if note.deleted {
+                                    title = format!("[Trash] {title}");
+                                }
                                 let snippet = truncate_chars(
-                                    &note.body.lines().next().unwrap_or_default().replace('\t', " "),
+                                    &note
+                                        .body
+                                        .lines()
+                                        .next()
+                                        .unwrap_or_default()
+                                        .replace('\t', " "),
                                     SNIPPET_MAX_PREVIEW_CHARS,
                                 );
                                 let updated = format_time(note.updated_at_ms);
@@ -480,68 +959,93 @@ impl eframe::App for WebMemoApp {
             let Some(selected_id) = self.state.selected_note_id.clone() else {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
-                    ui.label("Create a note with + New");
-                    if ui.button("New note in this folder").clicked() {
-                        self.create_note();
+                    if self.state.show_trash {
+                        ui.label("Trash is empty");
+                        if ui.button("Back to notes").clicked() {
+                            self.state.show_trash = false;
+                            self.sync_selection_for_current_scope();
+                            save_state(&self.state);
+                        }
+                    } else {
+                        ui.label("Create a note with + New");
+                        if ui.button("New note in this folder").clicked() {
+                            self.create_note();
+                        }
                     }
                 });
                 return;
             };
 
+            let Some(selected_note) = self
+                .state
+                .notes
+                .iter()
+                .find(|n| n.id == selected_id)
+                .cloned()
+            else {
+                self.state.selected_note_id = None;
+                self.editor_body.clear();
+                self.editor_tags.clear();
+                return;
+            };
+            let selected_is_deleted = selected_note.deleted;
             let folder_options = self.folder_options();
-            let selected_title = self
-                .state
-                .notes
-                .iter()
-                .find(|n| n.id == selected_id)
-                .map(|n| truncate_chars(safe_title(&n.title), 64))
-                .unwrap_or_else(|| "(untitled)".to_string());
-            let current_note_folder_id = self
-                .state
-                .notes
-                .iter()
-                .find(|n| n.id == selected_id)
-                .map(|n| n.folder_id.clone())
-                .unwrap_or_else(default_main_folder_id);
+            let selected_title = truncate_chars(safe_title(&selected_note.title), 64);
+            let current_note_folder_id = selected_note.folder_id.clone();
             let mut move_target_folder = current_note_folder_id.clone();
 
             ui.horizontal(|ui| {
                 ui.heading(selected_title);
+                if selected_is_deleted {
+                    ui.label("(in trash)");
+                }
                 ui.separator();
-                egui::ComboBox::from_id_salt("selected_note_folder_combo")
-                    .selected_text(self.folder_name_by_id(&move_target_folder))
-                    .show_ui(ui, |ui| {
-                        for (folder_id, folder_name) in &folder_options {
-                            ui.selectable_value(
-                                &mut move_target_folder,
-                                folder_id.clone(),
-                                folder_name,
-                            );
-                        }
-                    });
-                if ui.button("Delete").clicked() {
+                ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    egui::ComboBox::from_id_salt("selected_note_folder_combo")
+                        .selected_text(self.folder_name_by_id(&move_target_folder))
+                        .show_ui(ui, |ui| {
+                            for (folder_id, folder_name) in &folder_options {
+                                ui.selectable_value(
+                                    &mut move_target_folder,
+                                    folder_id.clone(),
+                                    folder_name,
+                                );
+                            }
+                        });
+                });
+                if selected_is_deleted {
+                    if ui.button("Restore").clicked() {
+                        self.restore_selected_note();
+                    }
+                    if ui.button("Delete Forever").clicked() {
+                        self.purge_selected_note();
+                    }
+                } else if ui.button("Delete").clicked() {
                     self.delete_selected_note();
                 }
             });
-            if move_target_folder != current_note_folder_id {
+            if !selected_is_deleted && move_target_folder != current_note_folder_id {
                 let moved_folder_name = self.folder_name_by_id(&move_target_folder);
                 if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id) {
                     note.folder_id = move_target_folder.clone();
                     note.updated_at_ms = now_millis();
                 }
                 sort_notes_by_updated_desc(&mut self.state.notes);
-                self.sync_selection_for_active_folder();
+                self.sync_selection_for_current_scope();
                 save_state(&self.state);
                 self.status_line = format!("moved to {moved_folder_name}");
             }
 
             ui.horizontal(|ui| {
                 ui.label("Tags:");
-                let tags_resp = ui.add_sized(
-                    [ui.available_width(), 26.0],
-                    egui::TextEdit::singleline(&mut self.editor_tags).hint_text("work idea rust"),
-                );
-                if tags_resp.changed() {
+                let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::TextEdit::singleline(&mut self.editor_tags)
+                            .hint_text("work idea rust"),
+                    )
+                });
+                if tags_resp.inner.changed() {
                     self.mark_dirty();
                 }
             });
@@ -553,14 +1057,19 @@ impl eframe::App for WebMemoApp {
             } else {
                 available.y.max(220.0)
             };
-            let edit_resp = ui.add_sized(
-                [available.x, editor_height],
-                egui::TextEdit::multiline(&mut self.editor_body)
-                    .hint_text("Write your memo...")
-                    .desired_width(f32::INFINITY),
-            );
-            if edit_resp.changed() {
+            let edit_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                ui.add_sized(
+                    [available.x, editor_height],
+                    egui::TextEdit::multiline(&mut self.editor_body)
+                        .hint_text("Write your memo...")
+                        .desired_width(f32::INFINITY),
+                )
+            });
+            if edit_resp.inner.changed() {
                 self.mark_dirty();
+            }
+            if selected_is_deleted {
+                ui.small("This note is in Trash. Restore it to edit.");
             }
 
             if self.state.markdown_render_mode {
@@ -581,6 +1090,73 @@ impl eframe::App for WebMemoApp {
                     ui.label("Storage: browser localStorage");
                 });
             });
+
+        if self.show_menu {
+            let mut open = self.show_menu;
+            egui::Window::new("Menu")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(380.0)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("Appearance");
+                    egui::ComboBox::from_id_salt("web_font_preset")
+                        .selected_text(font_preset_label(&self.state.ui_font_preset))
+                        .show_ui(ui, |ui| {
+                            for (id, label) in font_preset_options() {
+                                ui.selectable_value(
+                                    &mut self.state.ui_font_preset,
+                                    id.to_string(),
+                                    label,
+                                );
+                            }
+                        });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Text:");
+                        for (label, rgb) in TEXT_COLOR_PRESETS {
+                            let selected = self.state.ui_text_color_rgb == rgb;
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.state.ui_text_color_rgb = rgb;
+                            }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Background:");
+                        for (label, rgb) in BG_COLOR_PRESETS {
+                            let selected = self.state.ui_background_color_rgb == rgb;
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.state.ui_background_color_rgb = rgb;
+                            }
+                        }
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut self.state.ui_zoom, UI_ZOOM_MIN..=UI_ZOOM_MAX)
+                            .text("UI scale")
+                            .step_by(0.01),
+                    );
+                    if ui.button("Reset appearance").clicked() {
+                        self.state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
+                        self.state.ui_text_color_rgb = DEFAULT_TEXT_COLOR_RGB;
+                        self.state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
+                        self.state.ui_zoom = 1.0;
+                    }
+
+                    ui.separator();
+                    ui.label("Data I/O");
+                    if ui.button("Export JSON (All notes)").clicked() {
+                        self.export_json_all();
+                    }
+                    if ui.button("Export Markdown (Selected note)").clicked() {
+                        self.export_selected_markdown();
+                    }
+                    if ui.button("Import file...").clicked() {
+                        self.open_import_picker();
+                    }
+                    ui.small("Import: json/md/markdown/txt/text/log/rst/adoc/org");
+                });
+            self.show_menu = open;
+            save_state(&self.state);
+        }
 
         if self.show_folder_manager {
             let mut open = self.show_folder_manager;
@@ -695,7 +1271,11 @@ fn ensure_state_integrity(state: &mut WebState) {
     if state.folders.is_empty() {
         state.folders.push(main_folder());
     }
-    if !state.folders.iter().any(|folder| folder.id == MAIN_FOLDER_ID) {
+    if !state
+        .folders
+        .iter()
+        .any(|folder| folder.id == MAIN_FOLDER_ID)
+    {
         state.folders.insert(0, main_folder());
     }
 
@@ -720,7 +1300,10 @@ fn ensure_state_integrity(state: &mut WebState) {
             created_at_ms: folder.created_at_ms,
         });
     }
-    if !unique_folders.iter().any(|folder| folder.id == MAIN_FOLDER_ID) {
+    if !unique_folders
+        .iter()
+        .any(|folder| folder.id == MAIN_FOLDER_ID)
+    {
         unique_folders.insert(0, main_folder());
     }
     state.folders = unique_folders;
@@ -734,6 +1317,10 @@ fn ensure_state_integrity(state: &mut WebState) {
         state.selected_folder_id = MAIN_FOLDER_ID.to_string();
     }
 
+    if state.show_trash {
+        state.show_recent = false;
+    }
+
     for note in &mut state.notes {
         if note.folder_id.trim().is_empty()
             || !state
@@ -743,6 +1330,33 @@ fn ensure_state_integrity(state: &mut WebState) {
         {
             note.folder_id = MAIN_FOLDER_ID.to_string();
         }
+    }
+
+    let existing_ids: Vec<String> = state.notes.iter().map(|note| note.id.clone()).collect();
+    let mut normalized_recent = Vec::new();
+    for id in state.recent_note_ids.drain(..) {
+        if !existing_ids.iter().any(|existing| existing == &id) {
+            continue;
+        }
+        if normalized_recent
+            .iter()
+            .any(|existing: &String| existing == &id)
+        {
+            continue;
+        }
+        normalized_recent.push(id);
+    }
+    state.recent_note_ids = normalized_recent;
+
+    if !is_supported_font_preset(&state.ui_font_preset) {
+        state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
+    }
+    state.ui_zoom = state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
+    if state.ui_text_color_rgb == [0, 0, 0] {
+        state.ui_text_color_rgb = DEFAULT_TEXT_COLOR_RGB;
+    }
+    if state.ui_background_color_rgb == [0, 0, 0] {
+        state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
     }
 }
 
@@ -763,10 +1377,10 @@ fn now_millis() -> i64 {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|dur| dur.as_millis() as i64)
-        .unwrap_or_default()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|dur| dur.as_millis() as i64)
+            .unwrap_or_default()
     }
 }
 
@@ -778,6 +1392,7 @@ fn make_empty_note_in_folder(folder_id: &str) -> WebNote {
         title: String::new(),
         body: String::new(),
         tags: Vec::new(),
+        deleted: false,
         folder_id: folder_id.to_string(),
         created_at_ms: now,
         updated_at_ms: now,
@@ -877,10 +1492,21 @@ fn set_boot_status(message: &str) {
     element.set_text_content(Some(message));
 }
 
-fn apply_apple_like_style(ctx: &egui::Context) {
+fn apply_apple_like_style(
+    ctx: &egui::Context,
+    font_preset: &str,
+    text_color_rgb: [u8; 3],
+    background_color_rgb: [u8; 3],
+) {
+    let text_color = Color32::from_rgb(text_color_rgb[0], text_color_rgb[1], text_color_rgb[2]);
+    let bg_color = Color32::from_rgb(
+        background_color_rgb[0],
+        background_color_rgb[1],
+        background_color_rgb[2],
+    );
     let mut visuals = egui::Visuals::light();
-    visuals.override_text_color = Some(Color32::from_rgb(28, 28, 30));
-    visuals.panel_fill = Color32::from_rgb(245, 245, 247);
+    visuals.override_text_color = Some(text_color);
+    visuals.panel_fill = bg_color;
     visuals.window_fill = Color32::from_rgb(250, 250, 252);
     visuals.extreme_bg_color = Color32::from_rgb(238, 239, 243);
     visuals.faint_bg_color = Color32::from_rgb(243, 244, 247);
@@ -918,7 +1544,229 @@ fn apply_apple_like_style(ctx: &egui::Context) {
     style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(12);
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(12);
     style.visuals.widgets.open.corner_radius = egui::CornerRadius::same(12);
+
+    let body_family = font_family_for_preset(font_preset);
+    style
+        .text_styles
+        .insert(TextStyle::Body, FontId::new(15.0, body_family.clone()));
+    style
+        .text_styles
+        .insert(TextStyle::Button, FontId::new(14.0, body_family.clone()));
+    style
+        .text_styles
+        .insert(TextStyle::Small, FontId::new(12.0, body_family));
     ctx.set_style(style);
+}
+
+fn font_preset_options() -> [(&'static str, &'static str); 3] {
+    [
+        (FONT_PRESET_DEFAULT, "Standard"),
+        (FONT_PRESET_SERIF, "Serif"),
+        (FONT_PRESET_MONO, "Monospace"),
+    ]
+}
+
+fn is_supported_font_preset(font_preset: &str) -> bool {
+    font_preset_options()
+        .iter()
+        .any(|(id, _)| *id == font_preset)
+}
+
+fn font_preset_label(font_preset: &str) -> &'static str {
+    for (id, label) in font_preset_options() {
+        if id == font_preset {
+            return label;
+        }
+    }
+    "Standard"
+}
+
+fn font_family_for_preset(font_preset: &str) -> FontFamily {
+    match font_preset {
+        FONT_PRESET_SERIF => FontFamily::Name("serif".into()),
+        FONT_PRESET_MONO => FontFamily::Monospace,
+        _ => FontFamily::Proportional,
+    }
+}
+
+fn extension_from_name(file_name: &str) -> Option<String> {
+    let ext = file_name.rsplit('.').next()?.trim().to_ascii_lowercase();
+    if ext.is_empty() || ext == file_name {
+        return None;
+    }
+    Some(ext)
+}
+
+fn trim_file_name(file_name: &str) -> String {
+    let trimmed = file_name.trim();
+    let Some((stem, _)) = trimmed.rsplit_once('.') else {
+        return trimmed.to_string();
+    };
+    if stem.trim().is_empty() {
+        trimmed.to_string()
+    } else {
+        stem.trim().to_string()
+    }
+}
+
+fn sanitize_file_name(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        let safe = ch.is_ascii_alphanumeric() || ch == '-' || ch == '_';
+        if safe {
+            out.push(ch);
+        } else if ch.is_whitespace() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let normalized = out.trim_matches('-');
+    if normalized.is_empty() {
+        "note".to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
+fn store_import_result(result: Result<ImportPayload, String>) {
+    IMPORT_RESULT.with(|slot| *slot.borrow_mut() = Some(result));
+}
+
+fn take_import_result() -> Option<Result<ImportPayload, String>> {
+    IMPORT_RESULT.with(|slot| slot.borrow_mut().take())
+}
+
+fn start_import_picker() -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| "window is not available".to_string())?;
+    let document = window
+        .document()
+        .ok_or_else(|| "document is not available".to_string())?;
+    let element = document
+        .create_element("input")
+        .map_err(|_| "failed to create input element".to_string())?;
+    let input = element
+        .dyn_into::<web_sys::HtmlInputElement>()
+        .map_err(|_| "failed to cast input element".to_string())?;
+
+    input.set_type("file");
+    input.set_multiple(false);
+    let accept = SUPPORTED_IMPORT_EXTENSIONS
+        .iter()
+        .map(|ext| format!(".{ext}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    input.set_accept(&accept);
+
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&input);
+    }
+
+    let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target() else {
+            store_import_result(Err("file input target is missing".to_string()));
+            return;
+        };
+        let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
+            store_import_result(Err("file input target is invalid".to_string()));
+            return;
+        };
+
+        let Some(files) = input.files() else {
+            store_import_result(Err("no files selected".to_string()));
+            input.remove();
+            return;
+        };
+        let Some(file) = files.get(0) else {
+            store_import_result(Err("no files selected".to_string()));
+            input.remove();
+            return;
+        };
+        let file_name = file.name();
+        let Some(ext) = extension_from_name(&file_name) else {
+            store_import_result(Err("unsupported file extension".to_string()));
+            input.remove();
+            return;
+        };
+        if !SUPPORTED_IMPORT_EXTENSIONS
+            .iter()
+            .any(|allowed| *allowed == ext)
+        {
+            store_import_result(Err("unsupported file extension".to_string()));
+            input.remove();
+            return;
+        }
+
+        let reader = match web_sys::FileReader::new() {
+            Ok(reader) => reader,
+            Err(_) => {
+                store_import_result(Err("failed to create file reader".to_string()));
+                input.remove();
+                return;
+            }
+        };
+        let reader_for_cb = reader.clone();
+        let file_name_for_cb = file_name.clone();
+        let on_load = Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(
+            move |_event: web_sys::ProgressEvent| match reader_for_cb.result() {
+                Ok(result) => match result.as_string() {
+                    Some(content) => store_import_result(Ok(ImportPayload {
+                        file_name: file_name_for_cb.clone(),
+                        content,
+                    })),
+                    None => store_import_result(Err("failed to read file text".to_string())),
+                },
+                Err(_) => store_import_result(Err("failed to read selected file".to_string())),
+            },
+        );
+        reader.set_onloadend(Some(on_load.as_ref().unchecked_ref()));
+        on_load.forget();
+
+        if reader.read_as_text(&file).is_err() {
+            store_import_result(Err("failed to start file read".to_string()));
+        }
+        input.remove();
+    });
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
+    input.click();
+    Ok(())
+}
+
+fn download_text_file(file_name: &str, mime: &str, content: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| "window is not available".to_string())?;
+    let document = window
+        .document()
+        .ok_or_else(|| "document is not available".to_string())?;
+
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from_str(content));
+
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options)
+        .map_err(|_| "failed to create blob".to_string())?;
+
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "failed to create download url".to_string())?;
+
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "failed to create anchor".to_string())?
+        .dyn_into::<web_sys::HtmlAnchorElement>()
+        .map_err(|_| "failed to cast anchor".to_string())?;
+
+    anchor.set_href(&url);
+    anchor.set_download(file_name);
+
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&anchor);
+        anchor.click();
+        anchor.remove();
+    } else {
+        anchor.click();
+    }
+
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
 }
 
 fn render_markdown_preview(ui: &mut egui::Ui, body: &str) {
