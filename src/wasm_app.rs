@@ -1633,7 +1633,9 @@ fn font_preset_label(font_preset: &str) -> &'static str {
 
 fn font_family_for_preset(font_preset: &str) -> FontFamily {
     match font_preset {
-        FONT_PRESET_SERIF => FontFamily::Name("serif".into()),
+        // Web default fonts always provide Proportional/Monospace.
+        // Avoid custom named families here because missing family resolution can break rendering.
+        FONT_PRESET_SERIF => FontFamily::Proportional,
         FONT_PRESET_MONO => FontFamily::Monospace,
         _ => FontFamily::Proportional,
     }
