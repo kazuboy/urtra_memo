@@ -25,36 +25,33 @@ const UI_ZOOM_MIN: f32 = 0.85;
 const UI_ZOOM_MAX: f32 = 1.35;
 const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
 const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
-const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [0, 122, 255];
+const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [88, 86, 214];
 const FONT_PRESET_DEFAULT: &str = "default";
 const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
-const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 6] = [
+const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
     ("Ink", [28, 28, 30]),
     ("Slate", [55, 64, 81]),
-    ("Blue", [17, 62, 128]),
-    ("Green", [23, 97, 72]),
-    ("Brown", [109, 70, 41]),
     ("Wine", [121, 34, 57]),
+    ("Brown", [109, 70, 41]),
+    ("Blue", [17, 62, 128]),
 ];
-const BG_COLOR_PRESETS: [(&str, [u8; 3]); 6] = [
-    ("Mist", [245, 245, 247]),
+const BG_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
     ("Paper", [252, 252, 252]),
+    ("Mist", [245, 245, 247]),
     ("Warm", [247, 243, 234]),
     ("Sky", [237, 244, 250]),
-    ("Mint", [237, 247, 242]),
     ("Graphite", [234, 236, 240]),
 ];
-const ACCENT_COLOR_PRESETS: [(&str, [u8; 3]); 8] = [
-    ("Blue", [0, 122, 255]),
+const ACCENT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
+    ("Orange", [255, 149, 0]),
     ("Indigo", [88, 86, 214]),
     ("Teal", [0, 148, 136]),
     ("Green", [52, 199, 89]),
-    ("Orange", [255, 149, 0]),
     ("Pink", [255, 45, 85]),
-    ("Brown", [162, 132, 94]),
-    ("Slate", [96, 114, 132]),
 ];
+const PAPER_TEXT_RGB: [u8; 3] = [244, 244, 246];
+const NIGHT_MINT_ACCENT_RGB: [u8; 3] = [82, 196, 170];
 const SUPPORTED_IMPORT_EXTENSIONS: &[&str] = &[
     "json", "md", "markdown", "txt", "text", "log", "rst", "adoc", "org",
 ];
@@ -137,6 +134,14 @@ enum WebListSort {
     #[default]
     UpdatedDesc,
     CreatedDesc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppearancePreset {
+    Classic,
+    WarmJournal,
+    QuietModern,
+    NightNotes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -748,6 +753,41 @@ impl WebMemoApp {
             Err(err) => self.status_line = format!("import dialog failed: {err}"),
         }
     }
+
+    fn reset_appearance(&mut self) {
+        self.state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
+        self.state.ui_text_color_rgb = DEFAULT_TEXT_COLOR_RGB;
+        self.state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
+        self.state.ui_accent_color_rgb = DEFAULT_ACCENT_COLOR_RGB;
+        self.state.ui_zoom = 1.0;
+        self.status_line = "appearance reset".to_string();
+    }
+
+    fn apply_appearance_preset(&mut self, preset: AppearancePreset) {
+        match preset {
+            AppearancePreset::Classic => {
+                self.state.ui_text_color_rgb = [109, 70, 41];
+                self.state.ui_background_color_rgb = [252, 252, 252];
+                self.state.ui_accent_color_rgb = [0, 148, 136];
+            }
+            AppearancePreset::WarmJournal => {
+                self.state.ui_text_color_rgb = [121, 34, 57];
+                self.state.ui_background_color_rgb = [252, 252, 252];
+                self.state.ui_accent_color_rgb = [255, 149, 0];
+            }
+            AppearancePreset::QuietModern => {
+                self.state.ui_text_color_rgb = [55, 64, 81];
+                self.state.ui_background_color_rgb = [245, 245, 247];
+                self.state.ui_accent_color_rgb = [88, 86, 214];
+            }
+            AppearancePreset::NightNotes => {
+                self.state.ui_text_color_rgb = PAPER_TEXT_RGB;
+                self.state.ui_background_color_rgb = [234, 236, 240];
+                self.state.ui_accent_color_rgb = NIGHT_MINT_ACCENT_RGB;
+            }
+        }
+        self.status_line = "appearance preset applied".to_string();
+    }
 }
 
 impl eframe::App for WebMemoApp {
@@ -1114,7 +1154,27 @@ impl eframe::App for WebMemoApp {
                 .default_width(380.0)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("Appearance");
+                    ui.horizontal(|ui| {
+                        ui.label("Appearance");
+                        if ui.small_button("Reset").clicked() {
+                            self.reset_appearance();
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Preset:");
+                        if ui.button("Classic").clicked() {
+                            self.apply_appearance_preset(AppearancePreset::Classic);
+                        }
+                        if ui.button("Warm Journal").clicked() {
+                            self.apply_appearance_preset(AppearancePreset::WarmJournal);
+                        }
+                        if ui.button("Quiet Modern").clicked() {
+                            self.apply_appearance_preset(AppearancePreset::QuietModern);
+                        }
+                        if ui.button("Night Notes").clicked() {
+                            self.apply_appearance_preset(AppearancePreset::NightNotes);
+                        }
+                    });
                     egui::ComboBox::from_id_salt("web_font_preset")
                         .selected_text(font_preset_label(&self.state.ui_font_preset))
                         .show_ui(ui, |ui| {
@@ -1158,13 +1218,6 @@ impl eframe::App for WebMemoApp {
                             .text("UI scale")
                             .step_by(0.01),
                     );
-                    if ui.button("Reset appearance").clicked() {
-                        self.state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
-                        self.state.ui_text_color_rgb = DEFAULT_TEXT_COLOR_RGB;
-                        self.state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
-                        self.state.ui_accent_color_rgb = DEFAULT_ACCENT_COLOR_RGB;
-                        self.state.ui_zoom = 1.0;
-                    }
 
                     ui.separator();
                     ui.label("Data I/O");
