@@ -1,14 +1,35 @@
-﻿# Ultra Memo
+# Ultra Memo Web
 
-超軽量メモアプリ（Rust / egui）。
+Ultra Memo は、  
+「一瞬で書けて、一瞬で見つかる」を目指した軽量メモアプリです。
 
-## 起動
+このリポジトリで公開しているのは **Web 版（WASM）** です。
 
-```bash
-cargo run -- gui
-```
+## 特徴
 
-## Web (WASM) 実行
+- 起動してすぐ書けるシンプルUI
+- 自動保存（保存操作を意識しない）
+- 全文検索（タイトル / 本文 / `#tag`）
+- Markdown入力 + プレビュー切替
+- 一覧管理（All / Recent / Trash）
+- 論理削除・復元・完全削除
+- フォルダ作成・フォルダ移動（任意利用）
+- 外観カスタマイズ
+  - フォント
+  - 文字色 / 背景色 / アクセント色
+  - UI拡大率
+  - プリセット: `Classic / Warm Journal / Quiet Modern`
+- データ入出力
+  - Export: JSON（全件） / Markdown（選択メモ）
+  - Import: `json / md / markdown / txt / text / log / rst / adoc / org`
+
+## データ保存
+
+- 保存先: ブラウザの `localStorage`
+- 同じブラウザ・同じオリジンでデータが維持されます
+- クラウド同期は行いません（ローカル完結）
+
+## ローカルで動かす（開発用）
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -16,37 +37,30 @@ cargo install trunk
 trunk serve
 ```
 
-`http://127.0.0.1:8080` で Web 版を開けます。
-
-### Web版の仕様メモ
-
-- データ保存: ブラウザ `localStorage`（ローカル端末内のみ）
-- 検索: 起動中メモリ上で本文/タイトル/`#tag` を検索
-- Markdown: 編集中テキストの簡易プレビュー表示に対応
-- 非対応: SQLite インデックス、ネイティブクリップボード画像履歴、ファイルダイアログ連携
+起動後: `http://127.0.0.1:8080`
 
 ## GitHub Pages 公開
 
-このリポジトリには Pages デプロイ workflow を追加済みです:
+このリポジトリには Pages デプロイ workflow を設定済みです:
 
 - `.github/workflows/deploy-pages.yml`
 
 手順:
 
-1. GitHub に push（`main` または `master`）
-2. リポジトリ設定の `Pages` で `Build and deployment: GitHub Actions` を選択
-3. Actions の `Deploy Ultra Memo Web` が成功したら公開URLにアクセス
+1. `main`（または `master`）へ push
+2. GitHub の `Settings > Pages` で  
+   `Build and deployment: GitHub Actions` を選択
+3. Actions の `Deploy Ultra Memo Web` が成功したら公開URLへアクセス
 
-公開URLのベースパスは自動判定されます:
+公開URLのパス:
 
 - `username.github.io` リポジトリ: `/`
-- それ以外のリポジトリ: `/<repo-name>/`
+- それ以外: `/<repo-name>/`
 
-## 主なCLI
+## 向いている用途
 
-```bash
-cargo run -- list --limit 20
-cargo run -- search "keyword" --limit 20
-cargo run -- today
-cargo run -- rebuild-index
-```
+- 思いつきを素早く残すメモ
+- 日報・作業ログ・日記
+- タグ検索で過去メモを再発見する運用
+- 重い多機能ノートより、軽快さ優先の運用
+
