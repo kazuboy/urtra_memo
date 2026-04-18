@@ -76,6 +76,7 @@ struct WebState {
     focus_mode: bool,
     list_panel_width: f32,
     ui_zoom: f32,
+    ui_language: UiLanguage,
     ui_font_preset: String,
     ui_text_color_rgb: [u8; 3],
     ui_background_color_rgb: [u8; 3],
@@ -98,6 +99,7 @@ impl Default for WebState {
             focus_mode: false,
             list_panel_width: LIST_PANEL_DEFAULT_WIDTH,
             ui_zoom: 1.0,
+            ui_language: UiLanguage::English,
             ui_font_preset: FONT_PRESET_DEFAULT.to_string(),
             ui_text_color_rgb: DEFAULT_TEXT_COLOR_RGB,
             ui_background_color_rgb: DEFAULT_BG_COLOR_RGB,
@@ -132,6 +134,13 @@ enum WebListSort {
     #[default]
     UpdatedDesc,
     CreatedDesc,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+enum UiLanguage {
+    #[default]
+    English,
+    Japanese,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +221,20 @@ struct WebMemoApp {
 }
 
 impl WebMemoApp {
+    fn tr(&self, en: &'static str, ja: &'static str) -> &'static str {
+        match self.state.ui_language {
+            UiLanguage::English => en,
+            UiLanguage::Japanese => ja,
+        }
+    }
+
+    fn language_label(language: UiLanguage) -> &'static str {
+        match language {
+            UiLanguage::English => "English",
+            UiLanguage::Japanese => "日本語",
+        }
+    }
+
     fn new() -> Self {
         let mut state = load_state();
         ensure_state_integrity(&mut state);
@@ -268,7 +291,7 @@ impl WebMemoApp {
         self.state.selected_note_id = Some(id);
         self.editor_body.clear();
         self.editor_tags.clear();
-        self.status_line = "new note".to_string();
+        self.status_line = self.tr("new note", "新規メモ").to_string();
         save_state(&self.state);
     }
 
@@ -287,7 +310,7 @@ impl WebMemoApp {
         sort_notes_by_updated_desc(&mut self.state.notes);
         self.sync_selection_for_current_scope();
         self.dirty_since = None;
-        self.status_line = "moved to trash".to_string();
+        self.status_line = self.tr("moved to trash", "ゴミ箱へ移動").to_string();
         save_state(&self.state);
     }
 
@@ -306,7 +329,7 @@ impl WebMemoApp {
         sort_notes_by_updated_desc(&mut self.state.notes);
         self.sync_selection_for_current_scope();
         self.dirty_since = None;
-        self.status_line = "restored from trash".to_string();
+        self.status_line = self.tr("restored from trash", "ゴミ箱から復元").to_string();
         save_state(&self.state);
     }
 
@@ -325,7 +348,7 @@ impl WebMemoApp {
         }
         self.sync_selection_for_current_scope();
         self.dirty_since = None;
-        self.status_line = "deleted permanently".to_string();
+        self.status_line = self.tr("deleted permanently", "完全削除").to_string();
         save_state(&self.state);
     }
 
@@ -354,7 +377,10 @@ impl WebMemoApp {
             self.editor_tags.clear();
         }
         self.dirty_since = None;
-        self.status_line = format!("purged {removed} notes");
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => format!("purged {removed} notes"),
+            UiLanguage::Japanese => format!("{removed} 件を完全削除"),
+        };
         save_state(&self.state);
     }
 
@@ -399,7 +425,7 @@ impl WebMemoApp {
         let changed = self.commit_editor_into_selected();
         if changed {
             self.dirty_since = Some(Instant::now());
-            self.status_line = "editing...".to_string();
+            self.status_line = self.tr("editing...", "編集中...").to_string();
         }
     }
 
@@ -436,7 +462,7 @@ impl WebMemoApp {
             save_state(&self.state);
         }
         self.dirty_since = None;
-        self.status_line = "saved".to_string();
+        self.status_line = self.tr("saved", "保存済み").to_string();
     }
 
     fn autosave_if_needed(&mut self) {
@@ -450,7 +476,7 @@ impl WebMemoApp {
             save_state(&self.state);
         }
         self.dirty_since = None;
-        self.status_line = "auto-saved".to_string();
+        self.status_line = self.tr("auto-saved", "自動保存").to_string();
     }
 
     fn filtered_note_ids(&self) -> Vec<String> {
@@ -556,7 +582,9 @@ impl WebMemoApp {
     fn add_folder(&mut self) {
         let name = self.new_folder_name.trim();
         if name.is_empty() {
-            self.status_line = "folder name is empty".to_string();
+            self.status_line = self
+                .tr("folder name is empty", "フォルダ名が空です")
+                .to_string();
             return;
         }
 
@@ -567,7 +595,9 @@ impl WebMemoApp {
             .find(|folder| folder.name.eq_ignore_ascii_case(name))
         {
             self.set_active_folder(existing.id.clone());
-            self.status_line = "folder already exists".to_string();
+            self.status_line = self
+                .tr("folder already exists", "同名フォルダが存在します")
+                .to_string();
             self.new_folder_name.clear();
             return;
         }
@@ -580,7 +610,7 @@ impl WebMemoApp {
         self.state.folders.push(folder.clone());
         self.new_folder_name.clear();
         self.set_active_folder(folder.id);
-        self.status_line = "folder created".to_string();
+        self.status_line = self.tr("folder created", "フォルダを作成").to_string();
     }
 
     fn sync_selection_for_current_scope(&mut self) {
@@ -616,7 +646,12 @@ impl WebMemoApp {
         };
         match result {
             Ok(payload) => self.import_payload(payload),
-            Err(err) => self.status_line = format!("Import failed: {err}"),
+            Err(err) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("Import failed: {err}"),
+                    UiLanguage::Japanese => format!("インポート失敗: {err}"),
+                }
+            }
         }
     }
 
@@ -627,8 +662,12 @@ impl WebMemoApp {
             if self.try_import_json_bundle(&payload.content) {
                 return;
             }
-            self.status_line =
-                "JSON format is not supported. Use Ultra Memo Web export JSON.".to_string();
+            self.status_line = self
+                .tr(
+                    "JSON format is not supported. Use Ultra Memo Web export JSON.",
+                    "未対応のJSON形式です。Ultra Memo Web形式のJSONを使用してください。",
+                )
+                .to_string();
             return;
         }
         self.import_as_single_note(&payload.file_name, &payload.content);
@@ -680,7 +719,10 @@ impl WebMemoApp {
         sort_notes_by_updated_desc(&mut self.state.notes);
         self.sync_selection_for_current_scope();
         save_state(&self.state);
-        self.status_line = format!("imported {created} new, {updated} updated notes");
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => format!("imported {created} new, {updated} updated notes"),
+            UiLanguage::Japanese => format!("インポート完了: 新規 {created} / 更新 {updated}"),
+        };
         true
     }
 
@@ -708,7 +750,10 @@ impl WebMemoApp {
         self.state.selected_note_id = Some(id);
         self.sync_selection_for_current_scope();
         save_state(&self.state);
-        self.status_line = format!("imported '{file_name}'");
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => format!("imported '{file_name}'"),
+            UiLanguage::Japanese => format!("'{file_name}' をインポート"),
+        };
     }
 
     fn export_json_all(&mut self) {
@@ -722,32 +767,65 @@ impl WebMemoApp {
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => {
                 match download_text_file("ultra-memo-export.json", "application/json", &json) {
-                    Ok(()) => self.status_line = "exported JSON".to_string(),
-                    Err(err) => self.status_line = format!("export failed: {err}"),
+                    Ok(()) => {
+                        self.status_line = self.tr("exported JSON", "JSONを書き出し").to_string()
+                    }
+                    Err(err) => {
+                        self.status_line = match self.state.ui_language {
+                            UiLanguage::English => format!("export failed: {err}"),
+                            UiLanguage::Japanese => format!("エクスポート失敗: {err}"),
+                        }
+                    }
                 }
             }
-            Err(err) => self.status_line = format!("export failed: {err}"),
+            Err(err) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("export failed: {err}"),
+                    UiLanguage::Japanese => format!("エクスポート失敗: {err}"),
+                }
+            }
         }
     }
 
     fn export_selected_markdown(&mut self) {
         self.flush_editor_now();
         let Some(note) = selected_note(&self.state) else {
-            self.status_line = "no selected note".to_string();
+            self.status_line = self
+                .tr("no selected note", "選択中のメモがありません")
+                .to_string();
             return;
         };
         let base_name = sanitize_file_name(&safe_title(&note.title));
         let file_name = format!("{base_name}.md");
         match download_text_file(&file_name, "text/markdown", &note.body) {
-            Ok(()) => self.status_line = format!("exported {file_name}"),
-            Err(err) => self.status_line = format!("export failed: {err}"),
+            Ok(()) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("exported {file_name}"),
+                    UiLanguage::Japanese => format!("{file_name} を書き出し"),
+                }
+            }
+            Err(err) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("export failed: {err}"),
+                    UiLanguage::Japanese => format!("エクスポート失敗: {err}"),
+                }
+            }
         }
     }
 
     fn open_import_picker(&mut self) {
         match start_import_picker() {
-            Ok(()) => self.status_line = "choose a file to import".to_string(),
-            Err(err) => self.status_line = format!("import dialog failed: {err}"),
+            Ok(()) => {
+                self.status_line = self
+                    .tr("choose a file to import", "インポートするファイルを選択")
+                    .to_string()
+            }
+            Err(err) => {
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("import dialog failed: {err}"),
+                    UiLanguage::Japanese => format!("ファイル選択に失敗: {err}"),
+                }
+            }
         }
     }
 
@@ -757,7 +835,7 @@ impl WebMemoApp {
         self.state.ui_background_color_rgb = DEFAULT_BG_COLOR_RGB;
         self.state.ui_accent_color_rgb = DEFAULT_ACCENT_COLOR_RGB;
         self.state.ui_zoom = 1.0;
-        self.status_line = "appearance reset".to_string();
+        self.status_line = self.tr("appearance reset", "外観をリセット").to_string();
     }
 
     fn apply_appearance_preset(&mut self, preset: AppearancePreset) {
@@ -778,7 +856,9 @@ impl WebMemoApp {
                 self.state.ui_accent_color_rgb = [138, 136, 228];
             }
         }
-        self.status_line = "appearance preset applied".to_string();
+        self.status_line = self
+            .tr("appearance preset applied", "外観プリセットを適用")
+            .to_string();
     }
 }
 
@@ -803,20 +883,21 @@ impl eframe::App for WebMemoApp {
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let search_width = (ui.available_width() - 340.0).max(140.0);
+                let search_hint = self.tr("Search or #tag", "検索 or #タグ");
                 let search = ui.add_sized(
                     [search_width, 30.0],
-                    egui::TextEdit::singleline(&mut self.state.search_query)
-                        .hint_text("Search or #tag"),
+                    egui::TextEdit::singleline(&mut self.state.search_query).hint_text(search_hint),
                 );
                 if search.changed() {
-                    self.status_line = "search updated".to_string();
+                    self.status_line = self.tr("search updated", "検索を更新").to_string();
                 }
-                if ui.button("+ New").clicked() {
+                if ui.button(self.tr("+ New", "+ 新規")).clicked() {
                     self.create_note();
                 }
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
-                ui.toggle_value(&mut self.state.focus_mode, "Focus");
-                if ui.button("Menu").clicked() {
+                let focus_label = self.tr("Focus", "集中");
+                ui.toggle_value(&mut self.state.focus_mode, focus_label);
+                if ui.button(self.tr("Menu", "メニュー")).clicked() {
                     self.show_menu = true;
                 }
             });
@@ -854,7 +935,10 @@ impl eframe::App for WebMemoApp {
                     ui.horizontal(|ui| {
                         let all_selected = !self.state.show_recent && !self.state.show_trash;
                         if ui
-                            .selectable_label(all_selected, format!("All ({all_count})"))
+                            .selectable_label(
+                                all_selected,
+                                format!("{} ({all_count})", self.tr("All", "すべて")),
+                            )
                             .clicked()
                         {
                             self.set_list_mode(false, false);
@@ -862,7 +946,7 @@ impl eframe::App for WebMemoApp {
                         if ui
                             .selectable_label(
                                 self.state.show_recent,
-                                format!("Recent ({recent_count})"),
+                                format!("{} ({recent_count})", self.tr("Recent", "最近")),
                             )
                             .clicked()
                         {
@@ -871,7 +955,7 @@ impl eframe::App for WebMemoApp {
                         if ui
                             .selectable_label(
                                 self.state.show_trash,
-                                format!("Trash ({trash_count})"),
+                                format!("{} ({trash_count})", self.tr("Trash", "ゴミ箱")),
                             )
                             .clicked()
                         {
@@ -880,12 +964,12 @@ impl eframe::App for WebMemoApp {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("Sort:");
+                        ui.label(self.tr("Sort:", "並び:"));
                         ui.add_enabled_ui(!self.state.show_recent, |ui| {
                             if ui
                                 .selectable_label(
                                     matches!(self.state.list_sort, WebListSort::UpdatedDesc),
-                                    "Updated",
+                                    self.tr("Updated", "更新日"),
                                 )
                                 .clicked()
                             {
@@ -895,7 +979,7 @@ impl eframe::App for WebMemoApp {
                             if ui
                                 .selectable_label(
                                     matches!(self.state.list_sort, WebListSort::CreatedDesc),
-                                    "Created",
+                                    self.tr("Created", "作成日"),
                                 )
                                 .clicked()
                             {
@@ -904,39 +988,56 @@ impl eframe::App for WebMemoApp {
                             }
                         });
                         if self.state.show_recent {
-                            ui.small("(Recent keeps open order)");
+                            ui.small(
+                                self.tr("(Recent keeps open order)", "(最近は開いた順で固定)"),
+                            );
                         }
                     });
 
                     ui.horizontal(|ui| {
                         let can_use_folder = !self.state.show_trash && !self.state.show_recent;
                         if can_use_folder {
-                            ui.label(format!("Folder: {}", self.active_folder_name()));
+                            ui.label(format!(
+                                "{}: {}",
+                                self.tr("Folder", "フォルダ"),
+                                self.active_folder_name()
+                            ));
                         } else {
-                            ui.label("Folder: all");
+                            ui.label(format!(
+                                "{}: {}",
+                                self.tr("Folder", "フォルダ"),
+                                self.tr("all", "全体")
+                            ));
                         }
                         ui.add_enabled_ui(can_use_folder, |ui| {
-                            if ui.small_button("Folders").clicked() {
+                            if ui
+                                .small_button(self.tr("Folders", "フォルダ一覧"))
+                                .clicked()
+                            {
                                 self.show_folder_manager = true;
                             }
                             if self.state.selected_folder_id != MAIN_FOLDER_ID
-                                && ui.small_button("Main").clicked()
+                                && ui.small_button(self.tr("Main", "メイン")).clicked()
                             {
                                 self.set_active_folder(MAIN_FOLDER_ID.to_string());
                             }
                         });
-                        if self.state.show_trash && ui.small_button("Empty Trash").clicked() {
+                        if self.state.show_trash
+                            && ui
+                                .small_button(self.tr("Empty Trash", "ゴミ箱を空にする"))
+                                .clicked()
+                        {
                             self.purge_all_deleted();
                         }
                     });
 
                     let ids = self.filtered_note_ids();
                     let list_name = if self.state.show_trash {
-                        "Trash"
+                        self.tr("Trash", "ゴミ箱")
                     } else if self.state.show_recent {
-                        "Recent"
+                        self.tr("Recent", "最近")
                     } else {
-                        "All"
+                        self.tr("All", "すべて")
                     };
                     let scope_total = if self.state.show_trash {
                         trash_count
@@ -963,7 +1064,7 @@ impl eframe::App for WebMemoApp {
                                     TITLE_MAX_PREVIEW_CHARS,
                                 );
                                 if note.deleted {
-                                    title = format!("[Trash] {title}");
+                                    title = format!("[{}] {title}", self.tr("Trash", "ゴミ箱"));
                                 }
                                 let snippet = truncate_chars(
                                     &note
@@ -1006,15 +1107,21 @@ impl eframe::App for WebMemoApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     if self.state.show_trash {
-                        ui.label("Trash is empty");
-                        if ui.button("Back to notes").clicked() {
+                        ui.label(self.tr("Trash is empty", "ゴミ箱は空です"));
+                        if ui
+                            .button(self.tr("Back to notes", "メモ一覧へ戻る"))
+                            .clicked()
+                        {
                             self.state.show_trash = false;
                             self.sync_selection_for_current_scope();
                             save_state(&self.state);
                         }
                     } else {
-                        ui.label("Create a note with + New");
-                        if ui.button("New note in this folder").clicked() {
+                        ui.label(self.tr("Create a note with + New", "+ 新規 でメモを作成"));
+                        if ui
+                            .button(self.tr("New note in this folder", "このフォルダで新規メモ"))
+                            .clicked()
+                        {
                             self.create_note();
                         }
                     }
@@ -1043,7 +1150,7 @@ impl eframe::App for WebMemoApp {
             ui.horizontal(|ui| {
                 ui.heading(selected_title);
                 if selected_is_deleted {
-                    ui.label("(in trash)");
+                    ui.label(self.tr("(in trash)", "(ゴミ箱内)"));
                 }
                 ui.separator();
                 ui.add_enabled_ui(!selected_is_deleted, |ui| {
@@ -1060,13 +1167,13 @@ impl eframe::App for WebMemoApp {
                         });
                 });
                 if selected_is_deleted {
-                    if ui.button("Restore").clicked() {
+                    if ui.button(self.tr("Restore", "復元")).clicked() {
                         self.restore_selected_note();
                     }
-                    if ui.button("Delete Forever").clicked() {
+                    if ui.button(self.tr("Delete Forever", "完全削除")).clicked() {
                         self.purge_selected_note();
                     }
-                } else if ui.button("Delete").clicked() {
+                } else if ui.button(self.tr("Delete", "削除")).clicked() {
                     self.delete_selected_note();
                 }
             });
@@ -1079,16 +1186,19 @@ impl eframe::App for WebMemoApp {
                 sort_notes_by_updated_desc(&mut self.state.notes);
                 self.sync_selection_for_current_scope();
                 save_state(&self.state);
-                self.status_line = format!("moved to {moved_folder_name}");
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("moved to {moved_folder_name}"),
+                    UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
+                };
             }
 
             ui.horizontal(|ui| {
-                ui.label("Tags:");
+                ui.label(self.tr("Tags:", "タグ:"));
+                let tags_hint = self.tr("work idea rust", "work idea rust");
                 let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
                     ui.add_sized(
                         [ui.available_width(), 26.0],
-                        egui::TextEdit::singleline(&mut self.editor_tags)
-                            .hint_text("work idea rust"),
+                        egui::TextEdit::singleline(&mut self.editor_tags).hint_text(tags_hint),
                     )
                 });
                 if tags_resp.inner.changed() {
@@ -1103,11 +1213,12 @@ impl eframe::App for WebMemoApp {
             } else {
                 available.y.max(220.0)
             };
+            let editor_hint = self.tr("Write your memo...", "メモを書いてください...");
             let edit_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
                 ui.add_sized(
                     [available.x, editor_height],
                     egui::TextEdit::multiline(&mut self.editor_body)
-                        .hint_text("Write your memo...")
+                        .hint_text(editor_hint)
                         .desired_width(f32::INFINITY),
                 )
             });
@@ -1115,12 +1226,15 @@ impl eframe::App for WebMemoApp {
                 self.mark_dirty();
             }
             if selected_is_deleted {
-                ui.small("This note is in Trash. Restore it to edit.");
+                ui.small(self.tr(
+                    "This note is in Trash. Restore it to edit.",
+                    "このメモはゴミ箱内です。編集するには復元してください。",
+                ));
             }
 
             if self.state.markdown_render_mode {
                 ui.separator();
-                ui.label("Markdown Preview");
+                ui.label(self.tr("Markdown Preview", "Markdown プレビュー"));
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| render_markdown_preview(ui, &self.editor_body));
@@ -1133,34 +1247,60 @@ impl eframe::App for WebMemoApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(&self.status_line);
                     ui.separator();
-                    ui.label("Storage: browser localStorage");
+                    ui.label(self.tr(
+                        "Storage: browser localStorage",
+                        "保存先: ブラウザ localStorage",
+                    ));
                 });
             });
 
         let menu_was_open = self.show_menu;
         if self.show_menu {
             let mut open = self.show_menu;
-            egui::Window::new("Menu")
+            egui::Window::new(self.tr("Menu", "メニュー"))
                 .collapsible(false)
                 .resizable(false)
                 .default_width(380.0)
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Appearance");
-                        if ui.small_button("Reset").clicked() {
+                        ui.label(self.tr("Appearance", "外観"));
+                        if ui.small_button(self.tr("Reset", "リセット")).clicked() {
                             self.reset_appearance();
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("Language:", "言語:"));
+                        egui::ComboBox::from_id_salt("web_ui_language")
+                            .selected_text(Self::language_label(self.state.ui_language))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.state.ui_language,
+                                    UiLanguage::English,
+                                    Self::language_label(UiLanguage::English),
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.ui_language,
+                                    UiLanguage::Japanese,
+                                    Self::language_label(UiLanguage::Japanese),
+                                );
+                            });
+                    });
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Preset:");
-                        if ui.button("Classic").clicked() {
+                        ui.label(self.tr("Preset:", "プリセット:"));
+                        if ui.button(self.tr("Classic", "クラシック")).clicked() {
                             self.apply_appearance_preset(AppearancePreset::Classic);
                         }
-                        if ui.button("Warm Journal").clicked() {
+                        if ui
+                            .button(self.tr("Warm Journal", "ウォームジャーナル"))
+                            .clicked()
+                        {
                             self.apply_appearance_preset(AppearancePreset::WarmJournal);
                         }
-                        if ui.button("Quiet Modern").clicked() {
+                        if ui
+                            .button(self.tr("Quiet Modern", "クワイエットモダン"))
+                            .clicked()
+                        {
                             self.apply_appearance_preset(AppearancePreset::QuietModern);
                         }
                     });
@@ -1176,7 +1316,7 @@ impl eframe::App for WebMemoApp {
                             }
                         });
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Text:");
+                        ui.label(self.tr("Text:", "文字色:"));
                         for (label, rgb) in TEXT_COLOR_PRESETS {
                             let selected = self.state.ui_text_color_rgb == rgb;
                             if ui.selectable_label(selected, label).clicked() {
@@ -1185,7 +1325,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Background:");
+                        ui.label(self.tr("Background:", "背景色:"));
                         for (label, rgb) in BG_COLOR_PRESETS {
                             let selected = self.state.ui_background_color_rgb == rgb;
                             if ui.selectable_label(selected, label).clicked() {
@@ -1194,7 +1334,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Accent:");
+                        ui.label(self.tr("Accent:", "アクセント:"));
                         for (label, rgb) in ACCENT_COLOR_PRESETS {
                             let selected = self.state.ui_accent_color_rgb == rgb;
                             if ui.selectable_label(selected, label).clicked() {
@@ -1202,24 +1342,40 @@ impl eframe::App for WebMemoApp {
                             }
                         }
                     });
+                    let ui_scale_label = self.tr("UI scale", "UI 拡大率");
                     ui.add(
                         egui::Slider::new(&mut self.state.ui_zoom, UI_ZOOM_MIN..=UI_ZOOM_MAX)
-                            .text("UI scale")
+                            .text(ui_scale_label)
                             .step_by(0.01),
                     );
 
                     ui.separator();
-                    ui.label("Data I/O");
-                    if ui.button("Export JSON (All notes)").clicked() {
+                    ui.label(self.tr("Data I/O", "データ入出力"));
+                    if ui
+                        .button(self.tr("Export JSON (All notes)", "JSONを書き出し（全メモ）"))
+                        .clicked()
+                    {
                         self.export_json_all();
                     }
-                    if ui.button("Export Markdown (Selected note)").clicked() {
+                    if ui
+                        .button(self.tr(
+                            "Export Markdown (Selected note)",
+                            "Markdownを書き出し（選択メモ）",
+                        ))
+                        .clicked()
+                    {
                         self.export_selected_markdown();
                     }
-                    if ui.button("Import file...").clicked() {
+                    if ui
+                        .button(self.tr("Import file...", "ファイルをインポート..."))
+                        .clicked()
+                    {
                         self.open_import_picker();
                     }
-                    ui.small("Import: json/md/markdown/txt/text/log/rst/adoc/org");
+                    ui.small(self.tr(
+                        "Import: json/md/markdown/txt/text/log/rst/adoc/org",
+                        "対応: json/md/markdown/txt/text/log/rst/adoc/org",
+                    ));
                 });
             self.show_menu = open;
         }
@@ -1229,13 +1385,13 @@ impl eframe::App for WebMemoApp {
 
         if self.show_folder_manager {
             let mut open = self.show_folder_manager;
-            egui::Window::new("Folders")
+            egui::Window::new(self.tr("Folders", "フォルダ"))
                 .collapsible(false)
                 .resizable(false)
                 .default_width(280.0)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("Select folder");
+                    ui.label(self.tr("Select folder", "フォルダを選択"));
                     let folder_items: Vec<(String, String, usize)> = self
                         .state
                         .folders
@@ -1265,19 +1421,25 @@ impl eframe::App for WebMemoApp {
                     }
 
                     ui.separator();
-                    ui.label("Create folder");
+                    ui.label(self.tr("Create folder", "フォルダを作成"));
                     ui.horizontal(|ui| {
+                        let folder_name_hint = self.tr("Folder name", "フォルダ名");
                         let input = ui.add(
                             egui::TextEdit::singleline(&mut self.new_folder_name)
-                                .hint_text("Folder name"),
+                                .hint_text(folder_name_hint),
                         );
                         let submitted = input.lost_focus()
                             && ui.input(|input_state| input_state.key_pressed(egui::Key::Enter));
-                        if ui.button("Add").clicked() || submitted {
+                        if ui.button(self.tr("Add", "追加")).clicked() || submitted {
                             self.add_folder();
                         }
                     });
-                    ui.small(format!("Default folder is '{MAIN_FOLDER_NAME}'"));
+                    ui.small(match self.state.ui_language {
+                        UiLanguage::English => format!("Default folder is '{MAIN_FOLDER_NAME}'"),
+                        UiLanguage::Japanese => {
+                            format!("既定フォルダは '{MAIN_FOLDER_NAME}' です")
+                        }
+                    });
                 });
             self.show_folder_manager = open;
         }
