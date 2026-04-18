@@ -426,11 +426,8 @@ impl WebMemoApp {
     }
 
     fn mark_dirty(&mut self) {
-        let changed = self.commit_editor_into_selected();
-        if changed {
-            self.dirty_since = Some(Instant::now());
-            self.status_line = self.tr("editing...", "編集中...").to_string();
-        }
+        self.dirty_since = Some(Instant::now());
+        self.status_line = self.tr("editing...", "編集中...").to_string();
     }
 
     fn commit_editor_into_selected(&mut self) -> bool {
