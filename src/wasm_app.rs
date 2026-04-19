@@ -1633,7 +1633,6 @@ impl eframe::App for WebMemoApp {
                                 } else {
                                     visuals.widgets.inactive.bg_stroke
                                 };
-                                let mut settings_clicked = false;
                                 let mut note_clicked = false;
                                 let card = egui::Frame::new()
                                     .fill(fill)
@@ -1643,17 +1642,6 @@ impl eframe::App for WebMemoApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
-                                            ui.push_id(format!("note-settings-btn-{}", note.id), |ui| {
-                                                if ui
-                                                    .small_button("⚙")
-                                                    .on_hover_text(
-                                                        self.tr("Edit note settings", "メモ設定"),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    settings_clicked = true;
-                                                }
-                                            });
                                             let title_w = ui.available_width().max(80.0);
                                             let title_resp = ui.add_sized(
                                                 [title_w, 22.0],
@@ -1670,16 +1658,15 @@ impl eframe::App for WebMemoApp {
                                             ui.add(egui::Label::new(tags_line).truncate());
                                         }
                                     });
-                                let card_clicked = ui
+                                let card_response = ui
                                     .interact(
                                         card.response.rect,
                                         ui.id().with(("note-card-click", &note.id)),
                                         egui::Sense::click(),
-                                    )
-                                    .clicked();
-                                if settings_clicked {
+                                    );
+                                if card_response.secondary_clicked() {
                                     open_note_settings_from_list = Some(note.id.clone());
-                                } else if note_clicked || card_clicked {
+                                } else if note_clicked || card_response.clicked() {
                                     self.select_note(note.id.clone());
                                 }
                                 ui.add_space(6.0);
