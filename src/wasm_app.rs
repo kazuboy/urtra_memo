@@ -1051,19 +1051,7 @@ impl WebMemoApp {
 
     fn import_payload(&mut self, payload: ImportPayload) {
         self.flush_editor_now();
-        let ext = extension_from_name(&payload.file_name);
-        if ext.as_deref() == Some("json") {
-            if self.try_import_json_bundle(&payload.content) {
-                return;
-            }
-            self.status_line = self
-                .tr(
-                    "JSON format is not supported. Use Ultra Memo Web export JSON.",
-                    "未対応のJSON形式です。Ultra Memo Web形式のJSONを使用してください。",
-                )
-                .to_string();
-            return;
-        }
+        // Web import rule: one selected file always becomes one new memo.
         self.import_as_single_note(&payload.file_name, &payload.content);
     }
 
@@ -1876,9 +1864,11 @@ impl eframe::App for WebMemoApp {
             egui::Window::new(self.tr("Menu", "メニュー"))
                 .collapsible(false)
                 .resizable(false)
-                .default_width(380.0)
+                .default_width(520.0)
+                .min_width(500.0)
                 .open(&mut open)
                 .show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing.y = 7.0;
                     ui.horizontal(|ui| {
                         ui.label(self.tr("Appearance", "外観"));
                         if ui.small_button(self.tr("Reset", "リセット")).clicked() {
@@ -2005,8 +1995,8 @@ impl eframe::App for WebMemoApp {
                         self.open_import_picker();
                     }
                     ui.small(self.tr(
-                        "Import: json/md/markdown/txt/text/log/rst/adoc/org",
-                        "対応: json/md/markdown/txt/text/log/rst/adoc/org",
+                        "Import: json/md/markdown/txt/text/log/rst/adoc/org (1 file = 1 memo)",
+                        "対応: json/md/markdown/txt/text/log/rst/adoc/org（1ファイル=1メモ）",
                     ));
                 });
             self.show_menu = open;
