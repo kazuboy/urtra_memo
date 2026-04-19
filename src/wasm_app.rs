@@ -22,7 +22,7 @@ const MAIN_FOLDER_NAME: &str = "Main";
 const TITLE_MAX_PREVIEW_CHARS: usize = 64;
 const TAGS_MAX_PREVIEW_CHARS: usize = 30;
 const AUTOSAVE_DELAY_MS: i64 = 700;
-const LIST_PANEL_MIN_WIDTH: f32 = 180.0;
+const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
 const UI_ZOOM_MIN: f32 = 0.85;
@@ -69,7 +69,6 @@ thread_local! {
     static IDB_LOAD_RESULT: RefCell<Option<Result<String, String>>> = const { RefCell::new(None) };
     static IDB_SAVE_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static IDB_SAVE_RUNNING: RefCell<bool> = const { RefCell::new(false) };
-    static CLIPBOARD_TEXT_RESULT: RefCell<Option<Result<String, String>>> = const { RefCell::new(None) };
     static PERSIST_EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static SIZE_WARN_LEVEL: RefCell<u8> = const { RefCell::new(0) };
 }
@@ -160,14 +159,6 @@ export async function um_idb_load_state(dbName) {
   }
   return JSON.stringify(base);
 }
-
-export async function um_read_clipboard_text() {
-  if (!navigator.clipboard || !navigator.clipboard.readText) {
-    throw new Error("Clipboard API is not available");
-  }
-  const text = await navigator.clipboard.readText();
-  return text || "";
-}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
@@ -175,9 +166,6 @@ extern "C" {
 
     #[wasm_bindgen(catch)]
     fn um_idb_load_state(db_name: &str) -> Result<js_sys::Promise, JsValue>;
-
-    #[wasm_bindgen(catch)]
-    fn um_read_clipboard_text() -> Result<js_sys::Promise, JsValue>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,7 +189,6 @@ struct WebState {
     ui_text_color_rgb: [u8; 3],
     ui_background_color_rgb: [u8; 3],
     ui_accent_color_rgb: [u8; 3],
-    last_clipboard_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,7 +211,6 @@ struct WebStateMeta {
     ui_text_color_rgb: [u8; 3],
     ui_background_color_rgb: [u8; 3],
     ui_accent_color_rgb: [u8; 3],
-    last_clipboard_text: Option<String>,
 }
 
 impl Default for WebState {
@@ -248,7 +234,6 @@ impl Default for WebState {
             ui_text_color_rgb: DEFAULT_TEXT_COLOR_RGB,
             ui_background_color_rgb: DEFAULT_BG_COLOR_RGB,
             ui_accent_color_rgb: DEFAULT_ACCENT_COLOR_RGB,
-            last_clipboard_text: None,
         }
     }
 }
@@ -274,7 +259,6 @@ impl Default for WebStateMeta {
             ui_text_color_rgb: state.ui_text_color_rgb,
             ui_background_color_rgb: state.ui_background_color_rgb,
             ui_accent_color_rgb: state.ui_accent_color_rgb,
-            last_clipboard_text: state.last_clipboard_text,
         }
     }
 }
@@ -728,32 +712,6 @@ impl WebMemoApp {
         save_state(&self.state);
     }
 
-    fn move_note_to_folder(&mut self, note_id: &str, target_folder_id: &str) {
-        if target_folder_id.trim().is_empty() {
-            return;
-        }
-        let moved_folder_name = self.folder_name_by_id(target_folder_id);
-        let mut moved = false;
-        if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == note_id) {
-            if note.deleted || note.folder_id == target_folder_id {
-                return;
-            }
-            note.folder_id = target_folder_id.to_string();
-            note.updated_at_ms = now_millis();
-            moved = true;
-        }
-        if !moved {
-            return;
-        }
-        sort_notes_by_updated_desc(&mut self.state.notes);
-        self.sync_selection_for_current_scope();
-        save_state(&self.state);
-        self.status_line = match self.state.ui_language {
-            UiLanguage::English => format!("moved to {moved_folder_name}"),
-            UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
-        };
-    }
-
     fn selected_note_is_deleted(&self) -> bool {
         selected_note(&self.state)
             .map(|note| note.deleted)
@@ -860,73 +818,6 @@ impl WebMemoApp {
                 }
             }
         }
-    }
-
-    fn start_clipboard_text_capture(&mut self) {
-        start_clipboard_text_read();
-        self.status_line = self
-            .tr("reading clipboard text...", "クリップボードテキストを取得中...")
-            .to_string();
-    }
-
-    fn process_clipboard_text_result(&mut self) {
-        let Some(result) = take_clipboard_text_result() else {
-            return;
-        };
-        match result {
-            Ok(text) => self.capture_clipboard_text_as_note(text),
-            Err(err) => {
-                self.status_line = match self.state.ui_language {
-                    UiLanguage::English => format!("clipboard read failed: {err}"),
-                    UiLanguage::Japanese => format!("クリップボード読み取り失敗: {err}"),
-                };
-            }
-        }
-    }
-
-    fn capture_clipboard_text_as_note(&mut self, text: String) {
-        let normalized = text.replace("\r\n", "\n");
-        if normalized.trim().is_empty() {
-            self.status_line = self
-                .tr("clipboard is empty", "クリップボードのテキストが空です")
-                .to_string();
-            return;
-        }
-        if self.state.last_clipboard_text.as_deref() == Some(normalized.as_str()) {
-            self.status_line = self
-                .tr("same clipboard text already captured", "同じクリップボード内容は取り込み済みです")
-                .to_string();
-            return;
-        }
-
-        self.flush_editor_now();
-        self.state.show_recent = false;
-        self.state.show_trash = false;
-
-        let now = now_millis();
-        let id = format!("n{now}-{}", NOTE_SEQUENCE.fetch_add(1, Ordering::Relaxed));
-        let mut title = derive_title(&normalized);
-        if title.trim().is_empty() {
-            title = self.tr("Clipboard", "クリップボード").to_string();
-        }
-        let note = WebNote {
-            id: id.clone(),
-            title,
-            body: normalized.clone(),
-            tags: Vec::new(),
-            deleted: false,
-            folder_id: self.state.selected_folder_id.clone(),
-            created_at_ms: now,
-            updated_at_ms: now,
-        };
-        self.state.notes.insert(0, note);
-        self.state.selected_note_id = Some(id);
-        self.state.last_clipboard_text = Some(normalized);
-        self.sync_selection_for_current_scope();
-        save_state(&self.state);
-        self.status_line = self
-            .tr("clipboard text captured", "クリップボードテキストを保存しました")
-            .to_string();
     }
 
     fn import_payload(&mut self, payload: ImportPayload) {
@@ -1231,7 +1122,6 @@ impl eframe::App for WebMemoApp {
         self.process_idb_load_result();
         self.process_persist_events();
         self.process_import_result();
-        self.process_clipboard_text_result();
         self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
         ctx.set_zoom_factor(self.state.ui_zoom);
         apply_apple_like_style(
@@ -1256,9 +1146,6 @@ impl eframe::App for WebMemoApp {
                 }
                 if ui.button(self.tr("+ New", "+ 新規")).clicked() {
                     self.create_note();
-                }
-                if ui.button(self.tr("Clip+", "貼付保存")).clicked() {
-                    self.start_clipboard_text_capture();
                 }
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
                 let focus_label = self.tr("Focus", "集中");
@@ -1307,7 +1194,7 @@ impl eframe::App for WebMemoApp {
                         .count();
                     let trash_count = self.state.notes.iter().filter(|note| note.deleted).count();
 
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| {
                         let all_selected = !self.state.show_recent && !self.state.show_trash;
                         if ui
                             .selectable_label(
@@ -1338,7 +1225,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| {
                         ui.label(self.tr("Sort:", "並び:"));
                         ui.add_enabled_ui(!self.state.show_recent, |ui| {
                             if ui
@@ -1369,7 +1256,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| {
                         let can_use_folder = !self.state.show_trash && !self.state.show_recent;
                         if can_use_folder {
                             ui.label(format!(
@@ -1423,38 +1310,30 @@ impl eframe::App for WebMemoApp {
                     };
                     ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                     ui.separator();
-                    let mut select_note_from_list: Option<String> = None;
-                    let mut delete_note_from_list: Option<String> = None;
-                    let mut move_note_from_list: Option<(String, String)> = None;
-                    let folder_options_for_menu = self.folder_options();
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for note_id in ids {
-                                let Some(note) = self.state.notes.iter().find(|n| n.id == note_id) else {
+                                let Some(note) = self.state.notes.iter().find(|n| n.id == note_id)
+                                else {
                                     continue;
                                 };
-
-                                let note_id = note.id.clone();
-                                let note_deleted = note.deleted;
-                                let note_title = note.title.clone();
-                                let note_folder_id = note.folder_id.clone();
-                                let note_updated_at_ms = note.updated_at_ms;
-                                let note_tags = note.tags.clone();
-
                                 let selected = self.state.selected_note_id.as_deref()
-                                    == Some(note_id.as_str());
-                                let mut title = truncate_chars(safe_title(&note_title), TITLE_MAX_PREVIEW_CHARS);
-                                if note_deleted {
+                                    == Some(note.id.as_str());
+                                let mut title = truncate_chars(
+                                    safe_title(&note.title),
+                                    TITLE_MAX_PREVIEW_CHARS,
+                                );
+                                if note.deleted {
                                     title = format!("[{}] {title}", self.tr("Trash", "ゴミ箱"));
                                 }
-                                let updated = format_time(note_updated_at_ms);
-                                let tags_line = if note_tags.is_empty() {
+                                let updated = format_time(note.updated_at_ms);
+                                let tags_line = if note.tags.is_empty() {
                                     "-".to_string()
                                 } else {
                                     truncate_chars(
-                                        &format!("#{}", note_tags.join(" #")),
+                                        &format!("#{}", note.tags.join(" #")),
                                         TAGS_MAX_PREVIEW_CHARS,
                                     )
                                 };
@@ -1470,7 +1349,6 @@ impl eframe::App for WebMemoApp {
                                 } else {
                                     visuals.widgets.inactive.bg_stroke
                                 };
-                                let mut list_delete_clicked = false;
                                 let card = egui::Frame::new()
                                     .fill(fill)
                                     .stroke(stroke)
@@ -1478,89 +1356,17 @@ impl eframe::App for WebMemoApp {
                                     .inner_margin(egui::Margin::same(10))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            let title_width = (ui.available_width() - 34.0).max(80.0);
-                                            if selected && !note_deleted {
-                                                let title_hint = self.tr("(untitled)", "(無題)");
-                                                let title_edit = ui.add_sized(
-                                                    [title_width, 24.0],
-                                                    egui::TextEdit::singleline(&mut self.editor_title)
-                                                        .hint_text(title_hint),
-                                                );
-                                                if title_edit.changed() {
-                                                    self.mark_dirty();
-                                                }
-                                            } else {
-                                                ui.add_sized(
-                                                    [title_width, 22.0],
-                                                    egui::Label::new(title).truncate(),
-                                                );
-                                            }
-                                            if !note_deleted {
-                                                let delete_btn = ui.small_button("🗑");
-                                                delete_btn.clone().on_hover_text(self.tr("Delete", "削除"));
-                                                if delete_btn.clicked() {
-                                                    list_delete_clicked = true;
-                                                }
-                                            }
-                                        });
-                                        if selected && !note_deleted {
-                                            let tags_hint = self.tr("work idea rust", "work idea rust");
-                                            let tags_edit = ui.add_sized(
-                                                [ui.available_width(), 24.0],
-                                                egui::TextEdit::singleline(&mut self.editor_tags)
-                                                    .hint_text(tags_hint),
-                                            );
-                                            if tags_edit.changed() {
-                                                self.mark_dirty();
-                                            }
-                                        } else {
-                                            ui.add(egui::Label::new(tags_line).truncate());
-                                        }
+                                        ui.add(egui::Label::new(title).truncate());
                                         ui.add(egui::Label::new(updated).truncate());
+                                        ui.add(egui::Label::new(tags_line).truncate());
                                     });
-                                if !note_deleted {
-                                    let note_id_for_menu = note_id.clone();
-                                    let note_folder_for_menu = note_folder_id.clone();
-                                    card.response.context_menu(|ui| {
-                                        ui.label(self.tr("Move To Folder", "フォルダへ移動"));
-                                        ui.separator();
-                                        for (folder_id, folder_name) in &folder_options_for_menu {
-                                            let label = if *folder_id == note_folder_for_menu {
-                                                format!("✓ {folder_name}")
-                                            } else {
-                                                folder_name.clone()
-                                            };
-                                            if ui.button(label).clicked() {
-                                                move_note_from_list = Some((
-                                                    note_id_for_menu.clone(),
-                                                    folder_id.clone(),
-                                                ));
-                                                ui.close();
-                                            }
-                                        }
-                                    });
-                                }
-                                let card_clicked = card.response.interact(egui::Sense::click()).clicked();
-                                if list_delete_clicked {
-                                    delete_note_from_list = Some(note_id.clone());
-                                } else if card_clicked {
-                                    select_note_from_list = Some(note_id.clone());
+                                let clicked = card.response.interact(egui::Sense::click()).clicked();
+                                if clicked {
+                                    self.select_note(note.id.clone());
                                 }
                                 ui.add_space(6.0);
                             }
                         });
-
-                    if let Some(note_id) = select_note_from_list {
-                        self.select_note(note_id);
-                    }
-                    if let Some(note_id) = delete_note_from_list {
-                        self.select_note(note_id);
-                        self.delete_selected_note();
-                    }
-                    if let Some((note_id, folder_id)) = move_note_from_list {
-                        self.move_note_to_folder(&note_id, &folder_id);
-                    }
                 });
         }
 
@@ -1605,8 +1411,38 @@ impl eframe::App for WebMemoApp {
                 return;
             };
             let selected_is_deleted = selected_note.deleted;
+            let folder_options = self.folder_options();
+            let current_note_folder_id = selected_note.folder_id.clone();
+            let mut move_target_folder = current_note_folder_id.clone();
 
             ui.horizontal(|ui| {
+                let title_hint = self.tr("Title", "タイトル");
+                let title_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    ui.add_sized(
+                        [240.0, 30.0],
+                        egui::TextEdit::singleline(&mut self.editor_title).hint_text(title_hint),
+                    )
+                });
+                if title_resp.inner.changed() {
+                    self.mark_dirty();
+                }
+                if selected_is_deleted {
+                    ui.label(self.tr("(in trash)", "(ゴミ箱内)"));
+                }
+                ui.separator();
+                ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    egui::ComboBox::from_id_salt("selected_note_folder_combo")
+                        .selected_text(self.folder_name_by_id(&move_target_folder))
+                        .show_ui(ui, |ui| {
+                            for (folder_id, folder_name) in &folder_options {
+                                ui.selectable_value(
+                                    &mut move_target_folder,
+                                    folder_id.clone(),
+                                    folder_name,
+                                );
+                            }
+                        });
+                });
                 if selected_is_deleted {
                     if ui.button(self.tr("Restore", "復元")).clicked() {
                         self.restore_selected_note();
@@ -1614,13 +1450,37 @@ impl eframe::App for WebMemoApp {
                     if ui.button(self.tr("Delete Forever", "完全削除")).clicked() {
                         self.purge_selected_note();
                     }
-                } else {
-                    ui.small(self.tr(
-                        "Right-click a note in the list to move folders",
-                        "フォルダ移動は左リストの右クリックメニューから",
-                    ));
+                } else if ui.button(self.tr("Delete", "削除")).clicked() {
+                    self.delete_selected_note();
+                }
+
+                ui.separator();
+                ui.label(self.tr("Tags:", "タグ:"));
+                let tags_hint = self.tr("work idea rust", "work idea rust");
+                let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    ui.add_sized(
+                        [220.0, 30.0],
+                        egui::TextEdit::singleline(&mut self.editor_tags).hint_text(tags_hint),
+                    )
+                });
+                if tags_resp.inner.changed() {
+                    self.mark_dirty();
                 }
             });
+            if !selected_is_deleted && move_target_folder != current_note_folder_id {
+                let moved_folder_name = self.folder_name_by_id(&move_target_folder);
+                if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id) {
+                    note.folder_id = move_target_folder.clone();
+                    note.updated_at_ms = now_millis();
+                }
+                sort_notes_by_updated_desc(&mut self.state.notes);
+                self.sync_selection_for_current_scope();
+                save_state(&self.state);
+                self.status_line = match self.state.ui_language {
+                    UiLanguage::English => format!("moved to {moved_folder_name}"),
+                    UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
+                };
+            }
 
             ui.add_space(6.0);
             let available = ui.available_size();
@@ -1880,6 +1740,20 @@ impl eframe::App for WebMemoApp {
             self.show_folder_manager = open;
         }
     }
+}
+
+fn normalize_tags(raw: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for token in raw.split_whitespace() {
+        let normalized = token.trim().trim_start_matches('#').to_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !tags.iter().any(|item| item == &normalized) {
+            tags.push(normalized);
+        }
+    }
+    tags
 }
 
 fn note_matches_query(note: &WebNote, terms: &[&str]) -> bool {
@@ -2185,7 +2059,6 @@ fn state_to_meta(state: &WebState) -> WebStateMeta {
         ui_text_color_rgb: state.ui_text_color_rgb,
         ui_background_color_rgb: state.ui_background_color_rgb,
         ui_accent_color_rgb: state.ui_accent_color_rgb,
-        last_clipboard_text: state.last_clipboard_text.clone(),
     }
 }
 
@@ -2209,7 +2082,6 @@ fn state_from_meta(meta: WebStateMeta) -> WebState {
         ui_text_color_rgb: meta.ui_text_color_rgb,
         ui_background_color_rgb: meta.ui_background_color_rgb,
         ui_accent_color_rgb: meta.ui_accent_color_rgb,
-        last_clipboard_text: meta.last_clipboard_text,
     }
 }
 
@@ -2504,20 +2376,6 @@ fn trim_file_name(file_name: &str) -> String {
     }
 }
 
-fn normalize_tags(raw: &str) -> Vec<String> {
-    let mut tags = Vec::new();
-    for token in raw.split_whitespace() {
-        let normalized = token.trim_start_matches('#').trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            continue;
-        }
-        if !tags.iter().any(|t| t == &normalized) {
-            tags.push(normalized);
-        }
-    }
-    tags
-}
-
 fn sanitize_file_name(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
@@ -2542,27 +2400,6 @@ fn store_import_result(result: Result<ImportPayload, String>) {
 
 fn take_import_result() -> Option<Result<ImportPayload, String>> {
     IMPORT_RESULT.with(|slot| slot.borrow_mut().take())
-}
-
-fn store_clipboard_text_result(result: Result<String, String>) {
-    CLIPBOARD_TEXT_RESULT.with(|slot| *slot.borrow_mut() = Some(result));
-}
-
-fn take_clipboard_text_result() -> Option<Result<String, String>> {
-    CLIPBOARD_TEXT_RESULT.with(|slot| slot.borrow_mut().take())
-}
-
-fn start_clipboard_text_read() {
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = match um_read_clipboard_text() {
-            Ok(promise) => JsFuture::from(promise)
-                .await
-                .map(|value| value.as_string().unwrap_or_default())
-                .map_err(js_error_text),
-            Err(err) => Err(js_error_text(err)),
-        };
-        store_clipboard_text_result(result);
-    });
 }
 
 fn start_import_picker() -> Result<(), String> {
