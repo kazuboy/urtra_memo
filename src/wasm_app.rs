@@ -1831,12 +1831,18 @@ impl eframe::App for WebMemoApp {
                 ));
                 ui.add_space(6.0);
                 let available = ui.available_size();
-                ui.add_sized(
-                    [available.x, available.y.max(220.0)],
-                    egui::TextEdit::multiline(&mut self.editor_body)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false),
-                );
+                egui::ScrollArea::vertical()
+                    .id_salt("clip_history_scroll")
+                    .max_height(available.y.max(220.0))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            [ui.available_width(), available.y.max(220.0)],
+                            egui::TextEdit::multiline(&mut self.editor_body)
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                    });
                 return;
             }
 
@@ -1861,20 +1867,32 @@ impl eframe::App for WebMemoApp {
             }
 
             ui.add_space(6.0);
-            let available = ui.available_size();
-            let editor_height = if self.state.markdown_render_mode {
-                (available.y * 0.55).max(180.0)
+            let total_available = ui.available_size();
+            let preview_height = if self.state.markdown_render_mode {
+                (total_available.y * 0.4).max(140.0)
             } else {
-                available.y.max(220.0)
+                0.0
+            };
+            let editor_height = if self.state.markdown_render_mode {
+                (total_available.y - preview_height - 28.0).max(180.0)
+            } else {
+                total_available.y.max(220.0)
             };
             let editor_hint = self.tr("Write your memo...", "メモを書いてください...");
             let edit_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                ui.add_sized(
-                    [available.x, editor_height],
-                    egui::TextEdit::multiline(&mut self.editor_body)
-                        .hint_text(editor_hint)
-                        .desired_width(f32::INFINITY),
-                )
+                egui::ScrollArea::vertical()
+                    .id_salt("note_editor_scroll")
+                    .max_height(editor_height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            [ui.available_width(), editor_height.max(220.0)],
+                            egui::TextEdit::multiline(&mut self.editor_body)
+                                .hint_text(editor_hint)
+                                .desired_width(f32::INFINITY),
+                        )
+                    })
+                    .inner
             });
             if edit_resp.inner.changed() {
                 self.mark_dirty();
@@ -1890,6 +1908,8 @@ impl eframe::App for WebMemoApp {
                 ui.separator();
                 ui.label(self.tr("Markdown Preview", "Markdown プレビュー"));
                 egui::ScrollArea::vertical()
+                    .id_salt("markdown_preview_scroll")
+                    .max_height(preview_height)
                     .auto_shrink([false, false])
                     .show(ui, |ui| render_markdown_preview(ui, &self.editor_body));
             }
