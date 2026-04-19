@@ -1194,7 +1194,10 @@ impl eframe::App for WebMemoApp {
                     .map(|n| (n.id.clone(), n.deleted, n.folder_id.clone()))
             });
             let folder_options = self.folder_options();
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 34.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
                 // Keep search field compact so right-side controls never get clipped.
                 let search_width = (ui.available_width() * 0.36).clamp(150.0, 270.0);
                 let search = ui.add_sized(
@@ -1257,7 +1260,8 @@ impl eframe::App for WebMemoApp {
                         };
                     }
                 }
-            });
+            },
+            );
         });
 
         if !self.state.focus_mode {
@@ -1446,6 +1450,7 @@ impl eframe::App for WebMemoApp {
                                     visuals.widgets.inactive.bg_stroke
                                 };
                                 let mut settings_clicked = false;
+                                let mut note_clicked = false;
                                 let card = egui::Frame::new()
                                     .fill(fill)
                                     .stroke(stroke)
@@ -1466,18 +1471,22 @@ impl eframe::App for WebMemoApp {
                                                 }
                                             });
                                             let title_w = ui.available_width().max(80.0);
-                                            ui.add_sized(
+                                            let title_resp = ui.add_sized(
                                                 [title_w, 22.0],
-                                                egui::Label::new(title).truncate(),
+                                                egui::Button::new(title.clone())
+                                                    .frame(false)
+                                                    .selected(selected),
                                             );
+                                            if title_resp.clicked() {
+                                                note_clicked = true;
+                                            }
                                         });
                                         ui.add(egui::Label::new(updated).truncate());
                                         ui.add(egui::Label::new(tags_line).truncate());
                                     });
-                                let clicked = card.response.interact(egui::Sense::click()).clicked();
                                 if settings_clicked {
                                     open_note_settings_from_list = Some(note.id.clone());
-                                } else if clicked {
+                                } else if note_clicked || card.response.clicked() {
                                     self.select_note(note.id.clone());
                                 }
                                 ui.add_space(6.0);
