@@ -2975,19 +2975,6 @@ fn start_import_picker() -> Result<(), String> {
             return;
         };
         let file_name = file.name();
-        let Some(ext) = extension_from_name(&file_name) else {
-            store_import_result(Err("unsupported file extension".to_string()));
-            input.remove();
-            return;
-        };
-        if !SUPPORTED_IMPORT_EXTENSIONS
-            .iter()
-            .any(|allowed| *allowed == ext)
-        {
-            store_import_result(Err("unsupported file extension".to_string()));
-            input.remove();
-            return;
-        }
 
         let reader = match web_sys::FileReader::new() {
             Ok(reader) => reader,
@@ -2999,16 +2986,20 @@ fn start_import_picker() -> Result<(), String> {
         };
         let reader_for_cb = reader.clone();
         let file_name_for_cb = file_name.clone();
+        let input_for_cb = input.clone();
         let on_load = Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(
-            move |_event: web_sys::ProgressEvent| match reader_for_cb.result() {
-                Ok(result) => match result.as_string() {
-                    Some(content) => store_import_result(Ok(ImportPayload {
-                        file_name: file_name_for_cb.clone(),
-                        content,
-                    })),
-                    None => store_import_result(Err("failed to read file text".to_string())),
-                },
-                Err(_) => store_import_result(Err("failed to read selected file".to_string())),
+            move |_event: web_sys::ProgressEvent| {
+                match reader_for_cb.result() {
+                    Ok(result) => match result.as_string() {
+                        Some(content) => store_import_result(Ok(ImportPayload {
+                            file_name: file_name_for_cb.clone(),
+                            content,
+                        })),
+                        None => store_import_result(Err("failed to read file text".to_string())),
+                    },
+                    Err(_) => store_import_result(Err("failed to read selected file".to_string())),
+                }
+                input_for_cb.remove();
             },
         );
         reader.set_onloadend(Some(on_load.as_ref().unchecked_ref()));
@@ -3016,8 +3007,8 @@ fn start_import_picker() -> Result<(), String> {
 
         if reader.read_as_text(&file).is_err() {
             store_import_result(Err("failed to start file read".to_string()));
+            input.remove();
         }
-        input.remove();
     });
     input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
     on_change.forget();
