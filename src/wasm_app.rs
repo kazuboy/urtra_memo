@@ -1186,6 +1186,14 @@ impl eframe::App for WebMemoApp {
         self.autosave_if_needed();
 
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
+            let selected_note_meta = self.state.selected_note_id.as_ref().and_then(|id| {
+                self.state
+                    .notes
+                    .iter()
+                    .find(|n| &n.id == id)
+                    .map(|n| (n.id.clone(), n.deleted, n.folder_id.clone()))
+            });
+            let folder_options = self.folder_options();
             ui.horizontal(|ui| {
                 // Keep search field compact so right-side controls never get clipped.
                 let search_width = (ui.available_width() * 0.36).clamp(150.0, 270.0);
@@ -1213,6 +1221,41 @@ impl eframe::App for WebMemoApp {
                 }
                 if ui.button(self.tr("Menu", "メニュー")).clicked() {
                     self.show_menu = true;
+                }
+                if let Some((selected_id, selected_is_deleted, current_folder_id)) =
+                    selected_note_meta.clone()
+                {
+                    ui.separator();
+                    ui.label(self.tr("Folder:", "フォルダ:"));
+                    let mut move_target_folder = current_folder_id.clone();
+                    ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                        egui::ComboBox::from_id_salt("top_selected_note_folder_combo")
+                            .selected_text(self.folder_name_by_id(&move_target_folder))
+                            .show_ui(ui, |ui| {
+                                for (folder_id, folder_name) in &folder_options {
+                                    ui.selectable_value(
+                                        &mut move_target_folder,
+                                        folder_id.clone(),
+                                        folder_name,
+                                    );
+                                }
+                            });
+                    });
+                    if !selected_is_deleted && move_target_folder != current_folder_id {
+                        let moved_folder_name = self.folder_name_by_id(&move_target_folder);
+                        if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id)
+                        {
+                            note.folder_id = move_target_folder.clone();
+                            note.updated_at_ms = now_millis();
+                        }
+                        sort_notes_by_updated_desc(&mut self.state.notes);
+                        self.sync_selection_for_current_scope();
+                        save_state(&self.state);
+                        self.status_line = match self.state.ui_language {
+                            UiLanguage::English => format!("moved to {moved_folder_name}"),
+                            UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
+                        };
+                    }
                 }
             });
         });
@@ -1411,15 +1454,17 @@ impl eframe::App for WebMemoApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
-                                            if ui
-                                                .small_button("⚙")
-                                                .on_hover_text(
-                                                    self.tr("Edit note settings", "メモ設定"),
-                                                )
-                                                .clicked()
-                                            {
-                                                settings_clicked = true;
-                                            }
+                                            ui.push_id(format!("note-settings-btn-{}", note.id), |ui| {
+                                                if ui
+                                                    .small_button("⚙")
+                                                    .on_hover_text(
+                                                        self.tr("Edit note settings", "メモ設定"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    settings_clicked = true;
+                                                }
+                                            });
                                             let title_w = ui.available_width().max(80.0);
                                             ui.add_sized(
                                                 [title_w, 22.0],
@@ -1486,49 +1531,10 @@ impl eframe::App for WebMemoApp {
                 return;
             };
             let selected_is_deleted = selected_note.deleted;
-            let folder_options = self.folder_options();
-            let current_note_folder_id = selected_note.folder_id.clone();
-            let mut move_target_folder = current_note_folder_id.clone();
-
-            ui.horizontal(|ui| {
-                if selected_is_deleted {
-                    ui.label(self.tr("(in trash)", "(ゴミ箱内)"));
-                }
-                ui.label(self.tr("Folder:", "フォルダ:"));
-                ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                    egui::ComboBox::from_id_salt("selected_note_folder_combo")
-                        .selected_text(self.folder_name_by_id(&move_target_folder))
-                        .show_ui(ui, |ui| {
-                            for (folder_id, folder_name) in &folder_options {
-                                ui.selectable_value(
-                                    &mut move_target_folder,
-                                    folder_id.clone(),
-                                    folder_name,
-                                );
-                            }
-                        });
+            if selected_is_deleted {
+                ui.horizontal(|ui| {
+                    ui.small(self.tr("(in trash)", "(ゴミ箱内)"));
                 });
-                if ui
-                    .small_button("⚙")
-                    .on_hover_text(self.tr("Edit note settings", "メモ設定"))
-                    .clicked()
-                {
-                    self.open_note_settings(selected_id.clone());
-                }
-            });
-            if !selected_is_deleted && move_target_folder != current_note_folder_id {
-                let moved_folder_name = self.folder_name_by_id(&move_target_folder);
-                if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id) {
-                    note.folder_id = move_target_folder.clone();
-                    note.updated_at_ms = now_millis();
-                }
-                sort_notes_by_updated_desc(&mut self.state.notes);
-                self.sync_selection_for_current_scope();
-                save_state(&self.state);
-                self.status_line = match self.state.ui_language {
-                    UiLanguage::English => format!("moved to {moved_folder_name}"),
-                    UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
-                };
             }
 
             ui.add_space(6.0);
