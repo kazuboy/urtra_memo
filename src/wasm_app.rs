@@ -1,4 +1,4 @@
-use crate::model::{derive_title, normalize_tags, safe_title, truncate_chars};
+use crate::model::{derive_title, safe_title, truncate_chars};
 use chrono::{TimeZone, Utc};
 use eframe::egui;
 use eframe::egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
@@ -2502,6 +2502,20 @@ fn trim_file_name(file_name: &str) -> String {
     } else {
         stem.trim().to_string()
     }
+}
+
+fn normalize_tags(raw: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for token in raw.split_whitespace() {
+        let normalized = token.trim_start_matches('#').trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !tags.iter().any(|t| t == &normalized) {
+            tags.push(normalized);
+        }
+    }
+    tags
 }
 
 fn sanitize_file_name(raw: &str) -> String {
