@@ -37,3 +37,5 @@ Ultra Memo は、
 - タグ検索で過去メモを再発見する運用
 - 重い多機能ノートより、軽快さ優先の運用
 
+## 使い方
+https://github.com/kazuboy/urtra_memo/blob/main/docs/ultra-memo-web-guide-ja.md
