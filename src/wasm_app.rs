@@ -27,6 +27,7 @@ const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
 const UI_ZOOM_MIN: f32 = 0.85;
 const UI_ZOOM_MAX: f32 = 1.35;
+const UI_ZOOM_STEP: f32 = 0.05;
 const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
 const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
 const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [138, 136, 228];
@@ -1025,6 +1026,24 @@ impl WebMemoApp {
             .to_string();
     }
 
+    fn set_ui_zoom(&mut self, zoom: f32) {
+        let clamped = zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
+        if (self.state.ui_zoom - clamped).abs() < f32::EPSILON {
+            return;
+        }
+        self.state.ui_zoom = clamped;
+        let pct = (self.state.ui_zoom * 100.0).round() as i32;
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => format!("ui scale: {pct}%"),
+            UiLanguage::Japanese => format!("UI 拡大率: {pct}%"),
+        };
+        save_state(&self.state);
+    }
+
+    fn nudge_ui_zoom(&mut self, delta: f32) {
+        self.set_ui_zoom(self.state.ui_zoom + delta);
+    }
+
     fn start_idb_load_if_needed(&mut self) {
         if self.idb_load_started {
             return;
@@ -1131,6 +1150,15 @@ impl eframe::App for WebMemoApp {
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
                 let focus_label = self.tr("Focus", "集中");
                 ui.toggle_value(&mut self.state.focus_mode, focus_label);
+                if ui.small_button("A-").clicked() {
+                    self.nudge_ui_zoom(-UI_ZOOM_STEP);
+                }
+                if ui.small_button("A").clicked() {
+                    self.set_ui_zoom(1.0);
+                }
+                if ui.small_button("A+").clicked() {
+                    self.nudge_ui_zoom(UI_ZOOM_STEP);
+                }
                 if ui.button(self.tr("Menu", "メニュー")).clicked() {
                     self.show_menu = true;
                 }
@@ -1591,12 +1619,32 @@ impl eframe::App for WebMemoApp {
                             }
                         }
                     });
+                    ui.separator();
                     let ui_scale_label = self.tr("UI scale", "UI 拡大率");
-                    ui.add(
-                        egui::Slider::new(&mut self.state.ui_zoom, UI_ZOOM_MIN..=UI_ZOOM_MAX)
-                            .text(ui_scale_label)
-                            .step_by(0.01),
-                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(ui_scale_label);
+                        if ui.small_button("-").clicked() {
+                            self.nudge_ui_zoom(-UI_ZOOM_STEP);
+                        }
+                        let zoom_presets = [85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135];
+                        let selected_pct = (self.state.ui_zoom * 100.0).round() as i32;
+                        egui::ComboBox::from_id_salt("web_ui_zoom_preset")
+                            .selected_text(format!("{selected_pct}%"))
+                            .show_ui(ui, |ui| {
+                                for pct in zoom_presets {
+                                    let selected = selected_pct == pct;
+                                    if ui.selectable_label(selected, format!("{pct}%")).clicked() {
+                                        self.set_ui_zoom(pct as f32 / 100.0);
+                                    }
+                                }
+                            });
+                        if ui.small_button("+").clicked() {
+                            self.nudge_ui_zoom(UI_ZOOM_STEP);
+                        }
+                        if ui.small_button(self.tr("100%", "100%")).clicked() {
+                            self.set_ui_zoom(1.0);
+                        }
+                    });
 
                     ui.separator();
                     ui.label(self.tr("Data I/O", "データ入出力"));
