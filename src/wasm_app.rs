@@ -1195,7 +1195,7 @@ impl eframe::App for WebMemoApp {
             });
             let folder_options = self.folder_options();
             ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 42.0),
+                egui::vec2(ui.available_width(), 36.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                 // Keep search field compact so right-side controls never get clipped.
@@ -1229,22 +1229,28 @@ impl eframe::App for WebMemoApp {
                     selected_note_meta.clone()
                 {
                     ui.separator();
-                    ui.label(self.tr("Folder:", "フォルダ:"));
+                    ui.add_sized(
+                        [74.0, 30.0],
+                        egui::Label::new(self.tr("Folder:", "フォルダ:")),
+                    );
                     let mut move_target_folder = current_folder_id.clone();
                     if selected_is_deleted {
                         ui.label(self.folder_name_by_id(&current_folder_id));
                     } else {
-                        egui::ComboBox::from_id_salt("top_selected_note_folder_combo")
-                            .selected_text(self.folder_name_by_id(&move_target_folder))
-                            .show_ui(ui, |ui| {
-                                for (folder_id, folder_name) in &folder_options {
-                                    ui.selectable_value(
-                                        &mut move_target_folder,
-                                        folder_id.clone(),
-                                        folder_name,
-                                    );
-                                }
-                            });
+                        ui.scope(|ui| {
+                            ui.spacing_mut().interact_size.y = 30.0;
+                            egui::ComboBox::from_id_salt("top_selected_note_folder_combo")
+                                .selected_text(self.folder_name_by_id(&move_target_folder))
+                                .show_ui(ui, |ui| {
+                                    for (folder_id, folder_name) in &folder_options {
+                                        ui.selectable_value(
+                                            &mut move_target_folder,
+                                            folder_id.clone(),
+                                            folder_name,
+                                        );
+                                    }
+                                });
+                        });
                     }
                     if !selected_is_deleted && move_target_folder != current_folder_id {
                         let moved_folder_name = self.folder_name_by_id(&move_target_folder);
