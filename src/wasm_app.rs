@@ -1411,19 +1411,21 @@ impl eframe::App for WebMemoApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
-                                            let title_w = (ui.available_width() - 40.0).max(80.0);
-                                            ui.add_sized(
-                                                [title_w, 22.0],
-                                                egui::Label::new(title).truncate(),
-                                            );
                                             if !note.deleted
                                                 && ui
-                                                    .small_button("...")
-                                                    .on_hover_text(self.tr("Settings", "Settings"))
+                                                    .small_button("⚙")
+                                                    .on_hover_text(
+                                                        self.tr("Edit note settings", "メモ設定"),
+                                                    )
                                                     .clicked()
                                             {
                                                 settings_clicked = true;
                                             }
+                                            let title_w = ui.available_width().max(80.0);
+                                            ui.add_sized(
+                                                [title_w, 22.0],
+                                                egui::Label::new(title).truncate(),
+                                            );
                                         });
                                         ui.add(egui::Label::new(updated).truncate());
                                         ui.add(egui::Label::new(tags_line).truncate());
