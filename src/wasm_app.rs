@@ -1261,6 +1261,50 @@ impl WebMemoApp {
         self.set_ui_zoom(self.state.ui_zoom + delta);
     }
 
+    fn merge_loaded_state_with_local(loaded: &mut WebState, local: &WebState) {
+        for folder in &local.folders {
+            if !loaded.folders.iter().any(|f| f.id == folder.id) {
+                loaded.folders.push(folder.clone());
+            }
+        }
+
+        for note in &local.notes {
+            if let Some(existing) = loaded.notes.iter_mut().find(|n| n.id == note.id) {
+                if note.updated_at_ms > existing.updated_at_ms {
+                    *existing = note.clone();
+                }
+            } else {
+                loaded.notes.push(note.clone());
+            }
+        }
+
+        let mut merged_recent = local.recent_note_ids.clone();
+        for id in &loaded.recent_note_ids {
+            if !merged_recent.iter().any(|x| x == id) {
+                merged_recent.push(id.clone());
+            }
+        }
+        loaded.recent_note_ids = merged_recent;
+
+        loaded.selected_note_id = local.selected_note_id.clone();
+        loaded.selected_folder_id = local.selected_folder_id.clone();
+        loaded.search_query = local.search_query.clone();
+        loaded.show_recent = local.show_recent;
+        loaded.show_trash = local.show_trash;
+        loaded.list_sort = local.list_sort;
+        loaded.list_view = local.list_view;
+        loaded.markdown_render_mode = local.markdown_render_mode;
+        loaded.focus_mode = local.focus_mode;
+        loaded.list_panel_width = local.list_panel_width;
+        loaded.ui_zoom = local.ui_zoom;
+        loaded.ui_language = local.ui_language;
+        loaded.ui_font_preset = local.ui_font_preset.clone();
+        loaded.ui_text_color_rgb = local.ui_text_color_rgb;
+        loaded.ui_background_color_rgb = local.ui_background_color_rgb;
+        loaded.ui_accent_color_rgb = local.ui_accent_color_rgb;
+        loaded.clipboard_history = local.clipboard_history.clone();
+    }
+
     fn start_idb_load_if_needed(&mut self) {
         if self.idb_load_started {
             return;
@@ -1274,6 +1318,7 @@ impl WebMemoApp {
             return;
         };
         self.defer_empty_note_creation = false;
+        let local_before_load = self.state.clone();
         match result {
             Ok(raw) => {
                 let Ok(mut loaded) = serde_json::from_str::<WebState>(&raw) else {
@@ -1285,6 +1330,7 @@ impl WebMemoApp {
                         .to_string();
                     return;
                 };
+                Self::merge_loaded_state_with_local(&mut loaded, &local_before_load);
                 ensure_state_integrity(&mut loaded);
                 loaded.list_panel_width = loaded
                     .list_panel_width
