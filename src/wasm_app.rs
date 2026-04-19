@@ -22,7 +22,7 @@ const MAIN_FOLDER_NAME: &str = "Main";
 const TITLE_MAX_PREVIEW_CHARS: usize = 64;
 const TAGS_MAX_PREVIEW_CHARS: usize = 30;
 const AUTOSAVE_DELAY_MS: i64 = 700;
-const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
+const LIST_PANEL_MIN_WIDTH: f32 = 180.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
 const UI_ZOOM_MIN: f32 = 0.85;
@@ -1307,7 +1307,7 @@ impl eframe::App for WebMemoApp {
                         .count();
                     let trash_count = self.state.notes.iter().filter(|note| note.deleted).count();
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let all_selected = !self.state.show_recent && !self.state.show_trash;
                         if ui
                             .selectable_label(
@@ -1338,7 +1338,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(self.tr("Sort:", "並び:"));
                         ui.add_enabled_ui(!self.state.show_recent, |ui| {
                             if ui
@@ -1369,7 +1369,7 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let can_use_folder = !self.state.show_trash && !self.state.show_recent;
                         if can_use_folder {
                             ui.label(format!(
