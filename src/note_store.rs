@@ -1,4 +1,6 @@
-use crate::model::{derive_title, Note, NoteSummary, SearchResult, SortOrder};
+use crate::model::{
+    derive_title, normalize_tag_token, normalize_tags, Note, NoteSummary, SearchResult, SortOrder,
+};
 use crate::paths::AppPaths;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
@@ -1066,34 +1068,13 @@ fn parse_tag_query_terms(query: &str) -> Vec<String> {
     let mut tags = Vec::new();
     for token in query.split_whitespace() {
         if let Some(raw) = token.strip_prefix('#') {
-            let normalized = normalize_single_tag(raw);
+            let normalized = normalize_tag_token(raw);
             if !normalized.is_empty() {
                 tags.push(normalized);
             }
         }
     }
     tags
-}
-
-fn normalize_tags(raw: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for token in raw
-        .replace(',', " ")
-        .split_whitespace()
-        .map(|t| t.trim_start_matches('#'))
-    {
-        let normalized = normalize_single_tag(token);
-        if !normalized.is_empty() && !out.iter().any(|v| v == &normalized) {
-            out.push(normalized);
-        }
-    }
-    out
-}
-
-fn normalize_single_tag(raw: &str) -> String {
-    raw.trim()
-        .trim_matches(|c: char| c == '#' || c == '|' || c == ',' || c == ';')
-        .to_lowercase()
 }
 
 fn encode_tags(tags: &[String]) -> String {

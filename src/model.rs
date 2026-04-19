@@ -151,9 +151,32 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     )
 }
 
+/// Normalizes one tag token for stable matching and persistence.
+pub fn normalize_tag_token(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|c: char| c == '#' || c == '|' || c == ',' || c == ';')
+        .to_lowercase()
+}
+
+/// Normalizes raw tag input into unique, lowercase tags.
+pub fn normalize_tags(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for token in raw
+        .replace(',', " ")
+        .split_whitespace()
+        .map(|t| t.trim_start_matches('#'))
+    {
+        let normalized = normalize_tag_token(token);
+        if !normalized.is_empty() && !out.iter().any(|v| v == &normalized) {
+            out.push(normalized);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{derive_title, truncate_chars};
+    use super::{derive_title, normalize_tag_token, normalize_tags, truncate_chars};
 
     #[test]
     fn derive_title_skips_empty_and_markdown_heading() {
@@ -175,5 +198,19 @@ mod tests {
         assert_eq!(truncate_chars("あいうえお", 4), "あ...");
         assert_eq!(truncate_chars("abc", 10), "abc");
         assert_eq!(truncate_chars("abcdef", 0), "");
+    }
+
+    #[test]
+    fn normalize_tags_removes_duplicates_and_delimiters() {
+        let tags = normalize_tags(" #Work, rust ;work |idea|  ");
+        assert_eq!(
+            tags,
+            vec!["work".to_string(), "rust".to_string(), "idea".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_tag_token_trims_special_chars() {
+        assert_eq!(normalize_tag_token(" #Rust; "), "rust");
     }
 }
