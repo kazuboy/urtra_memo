@@ -1135,11 +1135,11 @@ impl eframe::App for WebMemoApp {
 
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let search_width = (ui.available_width() - 340.0).max(140.0);
-                let search_hint = self.tr("Search or #tag", "検索 or #タグ");
+                // Keep search field compact so right-side controls never get clipped.
+                let search_width = (ui.available_width() * 0.36).clamp(150.0, 270.0);
                 let search = ui.add_sized(
                     [search_width, 30.0],
-                    egui::TextEdit::singleline(&mut self.state.search_query).hint_text(search_hint),
+                    egui::TextEdit::singleline(&mut self.state.search_query),
                 );
                 if search.changed() {
                     self.status_line = self.tr("search updated", "検索を更新").to_string();
@@ -1419,7 +1419,7 @@ impl eframe::App for WebMemoApp {
                 let title_hint = self.tr("Title", "タイトル");
                 let title_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
                     ui.add_sized(
-                        [280.0, 30.0],
+                        [240.0, 30.0],
                         egui::TextEdit::singleline(&mut self.editor_title).hint_text(title_hint),
                     )
                 });
@@ -1453,6 +1453,19 @@ impl eframe::App for WebMemoApp {
                 } else if ui.button(self.tr("Delete", "削除")).clicked() {
                     self.delete_selected_note();
                 }
+
+                ui.separator();
+                ui.label(self.tr("Tags:", "タグ:"));
+                let tags_hint = self.tr("work idea rust", "work idea rust");
+                let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    ui.add_sized(
+                        [220.0, 30.0],
+                        egui::TextEdit::singleline(&mut self.editor_tags).hint_text(tags_hint),
+                    )
+                });
+                if tags_resp.inner.changed() {
+                    self.mark_dirty();
+                }
             });
             if !selected_is_deleted && move_target_folder != current_note_folder_id {
                 let moved_folder_name = self.folder_name_by_id(&move_target_folder);
@@ -1468,20 +1481,6 @@ impl eframe::App for WebMemoApp {
                     UiLanguage::Japanese => format!("{moved_folder_name} に移動"),
                 };
             }
-
-            ui.horizontal(|ui| {
-                ui.label(self.tr("Tags:", "タグ:"));
-                let tags_hint = self.tr("work idea rust", "work idea rust");
-                let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                    ui.add_sized(
-                        [ui.available_width(), 26.0],
-                        egui::TextEdit::singleline(&mut self.editor_tags).hint_text(tags_hint),
-                    )
-                });
-                if tags_resp.inner.changed() {
-                    self.mark_dirty();
-                }
-            });
 
             ui.add_space(6.0);
             let available = ui.available_size();
