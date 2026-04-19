@@ -1411,13 +1411,12 @@ impl eframe::App for WebMemoApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
-                                            if !note.deleted
-                                                && ui
-                                                    .small_button("⚙")
-                                                    .on_hover_text(
-                                                        self.tr("Edit note settings", "メモ設定"),
-                                                    )
-                                                    .clicked()
+                                            if ui
+                                                .small_button("⚙")
+                                                .on_hover_text(
+                                                    self.tr("Edit note settings", "メモ設定"),
+                                                )
+                                                .clicked()
                                             {
                                                 settings_clicked = true;
                                             }
@@ -1440,6 +1439,7 @@ impl eframe::App for WebMemoApp {
                             }
                         });
                     if let Some(note_id) = open_note_settings_from_list {
+                        self.select_note(note_id.clone());
                         self.open_note_settings(note_id);
                     }
                 });
@@ -1491,20 +1491,10 @@ impl eframe::App for WebMemoApp {
             let mut move_target_folder = current_note_folder_id.clone();
 
             ui.horizontal(|ui| {
-                let title_hint = self.tr("Title", "タイトル");
-                let title_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                    ui.add_sized(
-                        [240.0, 30.0],
-                        egui::TextEdit::singleline(&mut self.editor_title).hint_text(title_hint),
-                    )
-                });
-                if title_resp.inner.changed() {
-                    self.mark_dirty();
-                }
                 if selected_is_deleted {
                     ui.label(self.tr("(in trash)", "(ゴミ箱内)"));
                 }
-                ui.separator();
+                ui.label(self.tr("Folder:", "フォルダ:"));
                 ui.add_enabled_ui(!selected_is_deleted, |ui| {
                     egui::ComboBox::from_id_salt("selected_note_folder_combo")
                         .selected_text(self.folder_name_by_id(&move_target_folder))
@@ -1518,28 +1508,12 @@ impl eframe::App for WebMemoApp {
                             }
                         });
                 });
-                if selected_is_deleted {
-                    if ui.button(self.tr("Restore", "復元")).clicked() {
-                        self.restore_selected_note();
-                    }
-                    if ui.button(self.tr("Delete Forever", "完全削除")).clicked() {
-                        self.purge_selected_note();
-                    }
-                } else if ui.button(self.tr("Delete", "削除")).clicked() {
-                    self.delete_selected_note();
-                }
-
-                ui.separator();
-                ui.label(self.tr("Tags:", "タグ:"));
-                let tags_hint = self.tr("work idea rust", "work idea rust");
-                let tags_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                    ui.add_sized(
-                        [220.0, 30.0],
-                        egui::TextEdit::singleline(&mut self.editor_tags).hint_text(tags_hint),
-                    )
-                });
-                if tags_resp.inner.changed() {
-                    self.mark_dirty();
+                if ui
+                    .small_button("⚙")
+                    .on_hover_text(self.tr("Edit note settings", "メモ設定"))
+                    .clicked()
+                {
+                    self.open_note_settings(selected_id.clone());
                 }
             });
             if !selected_is_deleted && move_target_folder != current_note_folder_id {
@@ -1827,25 +1801,27 @@ impl eframe::App for WebMemoApp {
                 .and_then(|id| self.state.notes.iter().find(|n| n.id == *id))
                 .cloned();
 
-            egui::Window::new(self.tr("Note Settings", "Note Settings"))
+            egui::Window::new(self.tr("Note Settings", "メモ設定"))
                 .collapsible(false)
                 .resizable(false)
                 .default_width(360.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .movable(false)
                 .open(&mut open)
                 .show(ctx, |ui| {
                     let Some(note) = target_note.as_ref() else {
-                        ui.label(self.tr("Note not found", "Note not found"));
+                        ui.label(self.tr("Note not found", "メモが見つかりません"));
                         return;
                     };
 
                     if note.deleted {
-                        ui.label(self.tr("This note is in Trash.", "This note is in Trash."));
+                        ui.label(self.tr("This note is in Trash.", "このメモはゴミ箱内です。"));
                         ui.horizontal(|ui| {
-                            if ui.button(self.tr("Restore", "Restore")).clicked() {
+                            if ui.button(self.tr("Restore", "復元")).clicked() {
                                 do_restore = true;
                             }
                             if ui
-                                .button(self.tr("Delete Forever", "Delete Forever"))
+                                .button(self.tr("Delete Forever", "完全削除"))
                                 .clicked()
                             {
                                 do_delete_forever = true;
@@ -1854,26 +1830,26 @@ impl eframe::App for WebMemoApp {
                         return;
                     }
 
-                    let title_hint = self.tr("(untitled)", "(untitled)");
+                    let title_hint = self.tr("(untitled)", "(無題)");
                     let tags_hint = self.tr("work idea rust", "work idea rust");
-                    ui.label(self.tr("Title", "Title"));
+                    ui.label(self.tr("Title", "タイトル"));
                     ui.add_sized(
                         [ui.available_width(), 30.0],
                         egui::TextEdit::singleline(&mut self.note_settings_title)
                             .hint_text(title_hint),
                     );
                     ui.add_space(8.0);
-                    ui.label(self.tr("Tags", "Tags"));
+                    ui.label(self.tr("Tags", "タグ"));
                     ui.add_sized(
                         [ui.available_width(), 30.0],
                         egui::TextEdit::singleline(&mut self.note_settings_tags).hint_text(tags_hint),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button(self.tr("Save", "Save")).clicked() {
+                        if ui.button(self.tr("Save", "保存")).clicked() {
                             do_save = true;
                         }
-                        if ui.button(self.tr("Delete", "Delete")).clicked() {
+                        if ui.button(self.tr("Delete", "削除")).clicked() {
                             do_delete = true;
                         }
                     });
