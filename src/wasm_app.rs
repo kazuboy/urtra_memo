@@ -1195,7 +1195,7 @@ impl eframe::App for WebMemoApp {
             });
             let folder_options = self.folder_options();
             ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 34.0),
+                egui::vec2(ui.available_width(), 42.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                 // Keep search field compact so right-side controls never get clipped.
@@ -1231,7 +1231,9 @@ impl eframe::App for WebMemoApp {
                     ui.separator();
                     ui.label(self.tr("Folder:", "フォルダ:"));
                     let mut move_target_folder = current_folder_id.clone();
-                    ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                    if selected_is_deleted {
+                        ui.label(self.folder_name_by_id(&current_folder_id));
+                    } else {
                         egui::ComboBox::from_id_salt("top_selected_note_folder_combo")
                             .selected_text(self.folder_name_by_id(&move_target_folder))
                             .show_ui(ui, |ui| {
@@ -1243,7 +1245,7 @@ impl eframe::App for WebMemoApp {
                                     );
                                 }
                             });
-                    });
+                    }
                     if !selected_is_deleted && move_target_folder != current_folder_id {
                         let moved_folder_name = self.folder_name_by_id(&move_target_folder);
                         if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id)
