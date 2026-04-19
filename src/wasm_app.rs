@@ -186,6 +186,7 @@ struct WebState {
     show_recent: bool,
     show_trash: bool,
     list_sort: WebListSort,
+    list_view: WebListView,
     markdown_render_mode: bool,
     focus_mode: bool,
     list_panel_width: f32,
@@ -210,6 +211,7 @@ struct WebStateMeta {
     show_recent: bool,
     show_trash: bool,
     list_sort: WebListSort,
+    list_view: WebListView,
     markdown_render_mode: bool,
     focus_mode: bool,
     list_panel_width: f32,
@@ -234,6 +236,7 @@ impl Default for WebState {
             show_recent: false,
             show_trash: false,
             list_sort: WebListSort::UpdatedDesc,
+            list_view: WebListView::Detailed,
             markdown_render_mode: false,
             focus_mode: false,
             list_panel_width: LIST_PANEL_DEFAULT_WIDTH,
@@ -260,6 +263,7 @@ impl Default for WebStateMeta {
             show_recent: state.show_recent,
             show_trash: state.show_trash,
             list_sort: state.list_sort,
+            list_view: state.list_view,
             markdown_render_mode: state.markdown_render_mode,
             focus_mode: state.focus_mode,
             list_panel_width: state.list_panel_width,
@@ -391,6 +395,13 @@ struct WebMemoApp {
     note_settings_note_id: Option<String>,
     note_settings_title: String,
     note_settings_tags: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+enum WebListView {
+    #[default]
+    Detailed,
+    TitleOnly,
 }
 
 impl WebMemoApp {
@@ -1564,6 +1575,7 @@ impl eframe::App for WebMemoApp {
                     ui.separator();
                     let mut open_note_settings_from_list: Option<String> = None;
                     let show_clip_history_card = !self.state.show_trash;
+                    let title_only_list = matches!(self.state.list_view, WebListView::TitleOnly);
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -1601,8 +1613,10 @@ impl eframe::App for WebMemoApp {
                                                 self.select_clip_history();
                                             }
                                         });
-                                        ui.add(egui::Label::new(updated).truncate());
-                                        ui.add(egui::Label::new(preview).truncate());
+                                        if !title_only_list {
+                                            ui.add(egui::Label::new(updated).truncate());
+                                            ui.add(egui::Label::new(preview).truncate());
+                                        }
                                     });
                                 if card.response.clicked() {
                                     self.select_clip_history();
@@ -1676,12 +1690,15 @@ impl eframe::App for WebMemoApp {
                                                 note_clicked = true;
                                             }
                                         });
-                                        ui.add(egui::Label::new(updated).truncate());
-                                        ui.add(egui::Label::new(tags_line).truncate());
+                                        if !title_only_list {
+                                            ui.add(egui::Label::new(updated).truncate());
+                                            ui.add(egui::Label::new(tags_line).truncate());
+                                        }
                                     });
+                                let card_clicked = card.response.interact(egui::Sense::click()).clicked();
                                 if settings_clicked {
                                     open_note_settings_from_list = Some(note.id.clone());
-                                } else if note_clicked || card.response.clicked() {
+                                } else if note_clicked || card_clicked {
                                     self.select_note(note.id.clone());
                                 }
                                 ui.add_space(6.0);
@@ -1900,29 +1917,25 @@ impl eframe::App for WebMemoApp {
                         }
                     });
                     ui.separator();
-                    let ui_scale_label = self.tr("UI scale", "UI 拡大率");
+                    ui.label(self.tr("List view", "一覧表示"));
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(ui_scale_label);
-                        if ui.small_button("-").clicked() {
-                            self.nudge_ui_zoom(-UI_ZOOM_STEP);
+                        if ui
+                            .selectable_label(
+                                matches!(self.state.list_view, WebListView::Detailed),
+                                self.tr("Detailed", "詳細"),
+                            )
+                            .clicked()
+                        {
+                            self.state.list_view = WebListView::Detailed;
                         }
-                        let zoom_presets = [85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135];
-                        let selected_pct = (self.state.ui_zoom * 100.0).round() as i32;
-                        egui::ComboBox::from_id_salt("web_ui_zoom_preset")
-                            .selected_text(format!("{selected_pct}%"))
-                            .show_ui(ui, |ui| {
-                                for pct in zoom_presets {
-                                    let selected = selected_pct == pct;
-                                    if ui.selectable_label(selected, format!("{pct}%")).clicked() {
-                                        self.set_ui_zoom(pct as f32 / 100.0);
-                                    }
-                                }
-                            });
-                        if ui.small_button("+").clicked() {
-                            self.nudge_ui_zoom(UI_ZOOM_STEP);
-                        }
-                        if ui.small_button(self.tr("100%", "100%")).clicked() {
-                            self.set_ui_zoom(1.0);
+                        if ui
+                            .selectable_label(
+                                matches!(self.state.list_view, WebListView::TitleOnly),
+                                self.tr("Title only", "タイトルのみ"),
+                            )
+                            .clicked()
+                        {
+                            self.state.list_view = WebListView::TitleOnly;
                         }
                     });
 
@@ -2446,6 +2459,7 @@ fn state_to_meta(state: &WebState) -> WebStateMeta {
         show_recent: state.show_recent,
         show_trash: state.show_trash,
         list_sort: state.list_sort,
+        list_view: state.list_view,
         markdown_render_mode: state.markdown_render_mode,
         focus_mode: state.focus_mode,
         list_panel_width: state.list_panel_width,
@@ -2470,6 +2484,7 @@ fn state_from_meta(meta: WebStateMeta) -> WebState {
         show_recent: meta.show_recent,
         show_trash: meta.show_trash,
         list_sort: meta.list_sort,
+        list_view: meta.list_view,
         markdown_render_mode: meta.markdown_render_mode,
         focus_mode: meta.focus_mode,
         list_panel_width: meta.list_panel_width,
