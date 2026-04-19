@@ -69,7 +69,6 @@ static NOTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static FOLDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static IMPORT_RESULT: RefCell<Option<Result<ImportPayload, String>>> = const { RefCell::new(None) };
-    static CLIPBOARD_TEXT_RESULT: RefCell<Option<Result<String, String>>> = const { RefCell::new(None) };
     static IDB_LOAD_RESULT: RefCell<Option<Result<String, String>>> = const { RefCell::new(None) };
     static IDB_SAVE_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static IDB_SAVE_RUNNING: RefCell<bool> = const { RefCell::new(false) };
@@ -164,12 +163,6 @@ export async function um_idb_load_state(dbName) {
   return JSON.stringify(base);
 }
 
-export async function um_read_clipboard_text() {
-  if (!navigator.clipboard || !navigator.clipboard.readText) {
-    throw new Error("Clipboard API is unavailable");
-  }
-  return await navigator.clipboard.readText();
-}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
@@ -177,9 +170,6 @@ extern "C" {
 
     #[wasm_bindgen(catch)]
     fn um_idb_load_state(db_name: &str) -> Result<js_sys::Promise, JsValue>;
-
-    #[wasm_bindgen(catch)]
-    fn um_read_clipboard_text() -> Result<js_sys::Promise, JsValue>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -913,55 +903,26 @@ impl WebMemoApp {
         }
     }
 
-    fn read_clipboard_once(&mut self) {
-        match start_clipboard_text_read() {
-            Ok(()) => {
-                self.status_line = self
-                    .tr("reading clipboard...", "クリップボードを読み取り中...")
-                    .to_string()
-            }
-            Err(err) => {
-                self.status_line = match self.state.ui_language {
-                    UiLanguage::English => format!("clipboard read failed: {err}"),
-                    UiLanguage::Japanese => format!("クリップボード読み取り失敗: {err}"),
-                }
-            }
+    fn process_paste_events(&mut self, ctx: &egui::Context) {
+        let pasted: Vec<String> = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Paste(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        for text in pasted {
+            self.append_clipboard_history(text, false);
         }
     }
 
-    fn process_clipboard_result(&mut self) {
-        let Some(result) = take_clipboard_text_result() else {
-            return;
-        };
-        match result {
-            Ok(text) => self.append_clipboard_history(text),
-            Err(err) => {
-                self.status_line = match self.state.ui_language {
-                    UiLanguage::English => format!("clipboard read failed: {err}"),
-                    UiLanguage::Japanese => format!("クリップボード読み取り失敗: {err}"),
-                }
-            }
-        }
-    }
-
-    fn append_clipboard_history(&mut self, raw: String) {
+    fn append_clipboard_history(&mut self, raw: String, open_history: bool) {
         let Some(normalized) = normalize_clipboard_text(&raw) else {
-            self.status_line = self
-                .tr("clipboard is empty", "クリップボードが空です")
-                .to_string();
             return;
         };
-        if self
-            .state
-            .clipboard_history
-            .first()
-            .is_some_and(|entry| entry.text == normalized)
-        {
-            self.status_line = self
-                .tr("clipboard unchanged", "クリップボードは前回と同じです")
-                .to_string();
-            return;
-        }
         self.state.clipboard_history.insert(
             0,
             ClipboardTextEntry {
@@ -972,16 +933,19 @@ impl WebMemoApp {
         if self.state.clipboard_history.len() > CLIP_HISTORY_MAX_ITEMS {
             self.state.clipboard_history.truncate(CLIP_HISTORY_MAX_ITEMS);
         }
-        self.state.selected_note_id = Some(CLIP_HISTORY_NOTE_ID.to_string());
-        self.editor_title = self
-            .tr("Clipboard History", "クリップ履歴")
-            .to_string();
-        self.editor_tags.clear();
-        self.editor_body = render_clipboard_history_body(&self.state.clipboard_history);
+        if open_history || self.is_clip_history_selected() {
+            self.state.selected_note_id = Some(CLIP_HISTORY_NOTE_ID.to_string());
+            self.editor_title = self
+                .tr("Clipboard History", "クリップ履歴")
+                .to_string();
+            self.editor_tags.clear();
+            self.editor_body = render_clipboard_history_body(&self.state.clipboard_history);
+        }
         save_state(&self.state);
+        let count = self.state.clipboard_history.len();
         self.status_line = match self.state.ui_language {
-            UiLanguage::English => "clipboard captured".to_string(),
-            UiLanguage::Japanese => "クリップボードを履歴に追加".to_string(),
+            UiLanguage::English => format!("clipboard captured ({count})"),
+            UiLanguage::Japanese => format!("クリップボードを履歴に追加 ({count})"),
         };
     }
 
@@ -1334,7 +1298,7 @@ impl eframe::App for WebMemoApp {
         self.process_idb_load_result();
         self.process_persist_events();
         self.process_import_result();
-        self.process_clipboard_result();
+        self.process_paste_events(ctx);
         self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
         ctx.set_zoom_factor(self.state.ui_zoom);
         apply_apple_like_style(
@@ -1390,9 +1354,6 @@ impl eframe::App for WebMemoApp {
                 }
                 if ui.button(self.tr("+ New", "+ 新規")).clicked() {
                     self.create_note();
-                }
-                if ui.button("Clip+").clicked() {
-                    self.read_clipboard_once();
                 }
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
                 let focus_label = self.tr("Focus", "集中");
@@ -1768,15 +1729,14 @@ impl eframe::App for WebMemoApp {
                     }
                 });
                 ui.small(self.tr(
-                    "Web captures clipboard text only when you click Clip+.",
-                    "Web版は Clip+ 押下時のみクリップボードを取り込みます。",
+                    "Web adds history when you paste text in the app (Ctrl+V / context menu).",
+                    "Web版はアプリ内で貼り付けしたときに履歴へ追加されます（Ctrl+V / 右クリック貼り付け）。",
                 ));
                 ui.add_space(6.0);
-                let mut body = render_clipboard_history_body(&self.state.clipboard_history);
                 let available = ui.available_size();
                 ui.add_sized(
                     [available.x, available.y.max(220.0)],
-                    egui::TextEdit::multiline(&mut body)
+                    egui::TextEdit::multiline(&mut self.editor_body)
                         .desired_width(f32::INFINITY)
                         .interactive(false),
                 );
@@ -2281,12 +2241,6 @@ fn ensure_state_integrity(state: &mut WebState) {
         let Some(text) = normalize_clipboard_text(&entry.text) else {
             continue;
         };
-        if normalized_clip
-            .iter()
-            .any(|existing: &ClipboardTextEntry| existing.text == text)
-        {
-            continue;
-        }
         normalized_clip.push(ClipboardTextEntry {
             text,
             copied_at_ms: entry.copied_at_ms,
@@ -2661,7 +2615,7 @@ fn normalize_clipboard_text(raw: &str) -> Option<String> {
 
 fn render_clipboard_history_body(entries: &[ClipboardTextEntry]) -> String {
     if entries.is_empty() {
-        return "No clipboard history yet.\nClip+ でテキストを追加".to_string();
+        return "No clipboard history yet.\nPaste text in this app to add entries.".to_string();
     }
     let mut out = String::new();
     for (idx, entry) in entries.iter().enumerate() {
@@ -2880,30 +2834,6 @@ fn take_import_result() -> Option<Result<ImportPayload, String>> {
 struct ClipboardTextEntry {
     text: String,
     copied_at_ms: i64,
-}
-
-fn store_clipboard_text_result(result: Result<String, String>) {
-    CLIPBOARD_TEXT_RESULT.with(|slot| *slot.borrow_mut() = Some(result));
-}
-
-fn take_clipboard_text_result() -> Option<Result<String, String>> {
-    CLIPBOARD_TEXT_RESULT.with(|slot| slot.borrow_mut().take())
-}
-
-fn start_clipboard_text_read() -> Result<(), String> {
-    let promise = um_read_clipboard_text().map_err(js_error_text)?;
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = JsFuture::from(promise)
-            .await
-            .map_err(js_error_text)
-            .and_then(|value| {
-                value
-                    .as_string()
-                    .ok_or_else(|| "clipboard returned non-text value".to_string())
-            });
-        store_clipboard_text_result(result);
-    });
-    Ok(())
 }
 
 fn start_import_picker() -> Result<(), String> {
