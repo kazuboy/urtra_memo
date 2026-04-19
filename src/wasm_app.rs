@@ -979,28 +979,8 @@ impl WebMemoApp {
         self.editor_body = render_clipboard_history_body(&self.state.clipboard_history);
     }
 
-    fn clip_history_updated_label(&self) -> String {
-        self.state
-            .clipboard_history
-            .first()
-            .map(|entry| format_time(entry.copied_at_ms))
-            .unwrap_or_else(|| "-".to_string())
-    }
-
-    fn clip_history_preview_line(&self) -> String {
-        self.state
-            .clipboard_history
-            .first()
-            .map(|entry| truncate_chars(&entry.text, TAGS_MAX_PREVIEW_CHARS))
-            .unwrap_or_else(|| "-".to_string())
-    }
-
     fn clip_history_title(&self) -> String {
-        format!(
-            "{} ({})",
-            self.tr("Clip History", "クリップ履歴"),
-            self.state.clipboard_history.len()
-        )
+        self.tr("Clip History", "クリップ履歴").to_string()
     }
 
     fn is_clip_history_selected(&self) -> bool {
@@ -1549,7 +1529,8 @@ impl eframe::App for WebMemoApp {
                         });
                         if self.state.show_trash
                             && ui
-                                .small_button(self.tr("Empty Trash", "ゴミ箱を空にする"))
+                                .small_button(self.tr("Empty", "空にする"))
+                                .on_hover_text(self.tr("Empty Trash", "ゴミ箱を空にする"))
                                 .clicked()
                         {
                             self.purge_all_deleted();
@@ -1594,8 +1575,6 @@ impl eframe::App for WebMemoApp {
                                     visuals.widgets.inactive.bg_stroke
                                 };
                                 let title = self.clip_history_title();
-                                let updated = self.clip_history_updated_label();
-                                let preview = self.clip_history_preview_line();
                                 let card = egui::Frame::new()
                                     .fill(fill)
                                     .stroke(stroke)
@@ -1613,10 +1592,6 @@ impl eframe::App for WebMemoApp {
                                                 self.select_clip_history();
                                             }
                                         });
-                                        if !title_only_list {
-                                            ui.add(egui::Label::new(updated).truncate());
-                                            ui.add(egui::Label::new(preview).truncate());
-                                        }
                                     });
                                 if card.response.clicked() {
                                     self.select_clip_history();
@@ -1695,7 +1670,13 @@ impl eframe::App for WebMemoApp {
                                             ui.add(egui::Label::new(tags_line).truncate());
                                         }
                                     });
-                                let card_clicked = card.response.interact(egui::Sense::click()).clicked();
+                                let card_clicked = ui
+                                    .interact(
+                                        card.response.rect,
+                                        ui.id().with(("note-card-click", &note.id)),
+                                        egui::Sense::click(),
+                                    )
+                                    .clicked();
                                 if settings_clicked {
                                     open_note_settings_from_list = Some(note.id.clone());
                                 } else if note_clicked || card_clicked {
