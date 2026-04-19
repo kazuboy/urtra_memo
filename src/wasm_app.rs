@@ -395,6 +395,9 @@ struct WebMemoApp {
     note_settings_note_id: Option<String>,
     note_settings_title: String,
     note_settings_tags: String,
+    show_folder_delete_confirm: bool,
+    folder_delete_target_id: Option<String>,
+    folder_delete_target_name: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -478,6 +481,9 @@ impl WebMemoApp {
             note_settings_note_id: None,
             note_settings_title: String::new(),
             note_settings_tags: String::new(),
+            show_folder_delete_confirm: false,
+            folder_delete_target_id: None,
+            folder_delete_target_name: String::new(),
         };
         app.sync_selection_for_current_scope();
         app
@@ -867,6 +873,62 @@ impl WebMemoApp {
         self.new_folder_name.clear();
         self.set_active_folder(folder.id);
         self.status_line = self.tr("folder created", "フォルダを作成").to_string();
+    }
+
+    fn ask_delete_selected_folder(&mut self) {
+        if self.state.selected_folder_id == MAIN_FOLDER_ID {
+            self.status_line = self
+                .tr("default folder cannot be deleted", "既定フォルダは削除できません")
+                .to_string();
+            return;
+        }
+        self.folder_delete_target_id = Some(self.state.selected_folder_id.clone());
+        self.folder_delete_target_name = self.active_folder_name();
+        self.show_folder_delete_confirm = true;
+    }
+
+    fn delete_target_folder_confirmed(&mut self) {
+        let Some(target_id) = self.folder_delete_target_id.clone() else {
+            self.show_folder_delete_confirm = false;
+            return;
+        };
+        if target_id == MAIN_FOLDER_ID {
+            self.show_folder_delete_confirm = false;
+            return;
+        }
+        if !self.state.folders.iter().any(|f| f.id == target_id) {
+            self.show_folder_delete_confirm = false;
+            self.folder_delete_target_id = None;
+            self.folder_delete_target_name.clear();
+            return;
+        }
+        let mut moved = 0usize;
+        let now = now_millis();
+        for note in &mut self.state.notes {
+            if note.folder_id == target_id {
+                note.folder_id = MAIN_FOLDER_ID.to_string();
+                note.updated_at_ms = now;
+                moved += 1;
+            }
+        }
+        self.state.folders.retain(|folder| folder.id != target_id);
+        if self.state.selected_folder_id == target_id {
+            self.state.selected_folder_id = MAIN_FOLDER_ID.to_string();
+        }
+        sort_notes_by_updated_desc(&mut self.state.notes);
+        self.sync_selection_for_current_scope();
+        save_state(&self.state);
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => {
+                format!("folder deleted, moved {moved} notes to {MAIN_FOLDER_NAME}")
+            }
+            UiLanguage::Japanese => {
+                format!("フォルダ削除: {moved} 件を {MAIN_FOLDER_NAME} へ移動")
+            }
+        };
+        self.show_folder_delete_confirm = false;
+        self.folder_delete_target_id = None;
+        self.folder_delete_target_name.clear();
     }
 
     fn sync_selection_for_current_scope(&mut self) {
@@ -1366,8 +1428,8 @@ impl eframe::App for WebMemoApp {
                 {
                     ui.separator();
                     ui.add_sized(
-                        [74.0, 30.0],
-                        egui::Label::new(self.tr("Folder:", "フォルダ:")),
+                        [104.0, 30.0],
+                        egui::Label::new(self.tr("Move Folder:", "フォルダ移動:")),
                     );
                     let mut move_target_folder = current_folder_id.clone();
                     if selected_is_deleted {
@@ -1468,6 +1530,22 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
+                    let ids = self.filtered_note_ids();
+                    let list_name = if self.state.show_trash {
+                        self.tr("Trash", "ゴミ箱")
+                    } else if self.state.show_recent {
+                        self.tr("Recent", "最近")
+                    } else {
+                        self.tr("All", "すべて")
+                    };
+                    let scope_total = if self.state.show_trash {
+                        trash_count
+                    } else if self.state.show_recent {
+                        recent_count
+                    } else {
+                        all_count
+                    };
+
                     ui.horizontal(|ui| {
                         ui.label(self.tr("Sort:", "並び:"));
                         ui.add_enabled_ui(!self.state.show_recent, |ui| {
@@ -1492,6 +1570,8 @@ impl eframe::App for WebMemoApp {
                                 save_state(&self.state);
                             }
                         });
+                        ui.separator();
+                        ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                         if self.state.show_recent {
                             ui.small(
                                 self.tr("(Recent keeps open order)", "(最近は開いた順で固定)"),
@@ -1501,19 +1581,16 @@ impl eframe::App for WebMemoApp {
 
                     ui.horizontal(|ui| {
                         let can_use_folder = !self.state.show_trash && !self.state.show_recent;
-                        if can_use_folder {
-                            ui.label(format!(
-                                "{}: {}",
-                                self.tr("Folder", "フォルダ"),
-                                self.active_folder_name()
-                            ));
+                        let folder_name = if can_use_folder {
+                            self.active_folder_name()
                         } else {
-                            ui.label(format!(
-                                "{}: {}",
-                                self.tr("Folder", "フォルダ"),
-                                self.tr("all", "全体")
-                            ));
-                        }
+                            self.tr("all", "全体").to_string()
+                        };
+                        ui.add(egui::Label::new(folder_name).truncate());
+                    });
+
+                    ui.horizontal(|ui| {
+                        let can_use_folder = !self.state.show_trash && !self.state.show_recent;
                         ui.add_enabled_ui(can_use_folder, |ui| {
                             if ui
                                 .small_button(self.tr("Folders", "フォルダ一覧"))
@@ -1526,6 +1603,19 @@ impl eframe::App for WebMemoApp {
                             {
                                 self.set_active_folder(MAIN_FOLDER_ID.to_string());
                             }
+                            if ui
+                                .add_enabled(
+                                    self.state.selected_folder_id != MAIN_FOLDER_ID,
+                                    egui::Button::new(self.tr("Delete", "削除")).small(),
+                                )
+                                .on_hover_text(self.tr(
+                                    "Delete selected folder (moves notes to Main)",
+                                    "選択フォルダを削除（メモはMainへ移動）",
+                                ))
+                                .clicked()
+                            {
+                                self.ask_delete_selected_folder();
+                            }
                         });
                         if self.state.show_trash
                             && ui
@@ -1537,22 +1627,6 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    let ids = self.filtered_note_ids();
-                    let list_name = if self.state.show_trash {
-                        self.tr("Trash", "ゴミ箱")
-                    } else if self.state.show_recent {
-                        self.tr("Recent", "最近")
-                    } else {
-                        self.tr("All", "すべて")
-                    };
-                    let scope_total = if self.state.show_trash {
-                        trash_count
-                    } else if self.state.show_recent {
-                        recent_count
-                    } else {
-                        all_count
-                    };
-                    ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                     ui.separator();
                     let mut open_note_settings_from_list: Option<String> = None;
                     let show_clip_history_card = !self.state.show_trash;
@@ -2000,6 +2074,52 @@ impl eframe::App for WebMemoApp {
                     });
                 });
             self.show_folder_manager = open;
+        }
+
+        if self.show_folder_delete_confirm {
+            let mut open = self.show_folder_delete_confirm;
+            let mut do_delete = false;
+            let mut do_cancel = false;
+            egui::Window::new(self.tr("Delete Folder", "フォルダ削除"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(360.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let folder_name = if self.folder_delete_target_name.trim().is_empty() {
+                        self.active_folder_name()
+                    } else {
+                        self.folder_delete_target_name.clone()
+                    };
+                    ui.label(match self.state.ui_language {
+                        UiLanguage::English => format!(
+                            "Delete '{folder_name}'? Notes in this folder will be moved to {MAIN_FOLDER_NAME}."
+                        ),
+                        UiLanguage::Japanese => format!(
+                            "'{folder_name}' を削除しますか？ このフォルダ内のメモは {MAIN_FOLDER_NAME} へ移動されます。"
+                        ),
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.tr("Cancel", "キャンセル")).clicked() {
+                            do_cancel = true;
+                        }
+                        if ui.button(self.tr("Delete", "削除")).clicked() {
+                            do_delete = true;
+                        }
+                    });
+                });
+            if do_cancel {
+                open = false;
+            }
+            self.show_folder_delete_confirm = open;
+            if do_delete {
+                self.delete_target_folder_confirmed();
+            } else if !self.show_folder_delete_confirm {
+                self.folder_delete_target_id = None;
+                self.folder_delete_target_name.clear();
+            }
         }
 
         if self.show_note_settings {
