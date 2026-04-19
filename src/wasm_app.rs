@@ -1128,8 +1128,12 @@ impl WebMemoApp {
         };
         self.state.show_recent = false;
         self.state.show_trash = false;
-        self.state.notes.insert(0, note);
+        self.state.notes.insert(0, note.clone());
         self.state.selected_note_id = Some(id);
+        self.editor_title = note.title.clone();
+        self.editor_body = note.body.clone();
+        self.editor_tags = note.tags.join(" ");
+        self.dirty_since_ms = None;
         self.sync_selection_for_current_scope();
         save_state(&self.state);
         self.status_line = match self.state.ui_language {
