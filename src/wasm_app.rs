@@ -35,6 +35,9 @@ const FONT_PRESET_DEFAULT: &str = "default";
 const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
 const WEB_CJK_FONT_ID: &str = "web_cjk_mplus";
+const CLIP_HISTORY_NOTE_ID: &str = "__web_clip_history__";
+const CLIP_HISTORY_MAX_ITEMS: usize = 400;
+const CLIP_ITEM_MAX_CHARS: usize = 8000;
 const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
     ("Ink", [28, 28, 30]),
     ("Slate", [55, 64, 81]),
@@ -183,6 +186,8 @@ extern "C" {
 #[serde(default)]
 struct WebState {
     notes: Vec<WebNote>,
+    #[serde(default)]
+    clipboard_history: Vec<ClipboardTextEntry>,
     folders: Vec<WebFolder>,
     recent_note_ids: Vec<String>,
     selected_note_id: Option<String>,
@@ -205,6 +210,8 @@ struct WebState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct WebStateMeta {
+    #[serde(default)]
+    clipboard_history: Vec<ClipboardTextEntry>,
     folders: Vec<WebFolder>,
     recent_note_ids: Vec<String>,
     selected_note_id: Option<String>,
@@ -228,6 +235,7 @@ impl Default for WebState {
     fn default() -> Self {
         Self {
             notes: Vec::new(),
+            clipboard_history: Vec::new(),
             folders: vec![main_folder()],
             recent_note_ids: Vec::new(),
             selected_note_id: None,
@@ -253,6 +261,7 @@ impl Default for WebStateMeta {
     fn default() -> Self {
         let state = WebState::default();
         Self {
+            clipboard_history: state.clipboard_history,
             folders: state.folders,
             recent_note_ids: state.recent_note_ids,
             selected_note_id: state.selected_note_id,
@@ -423,7 +432,9 @@ impl WebMemoApp {
         if state.selected_note_id.is_none() && !state.notes.is_empty() {
             state.selected_note_id = state.notes.first().map(|note| note.id.clone());
         } else if let Some(selected_id) = state.selected_note_id.clone() {
-            if !state.notes.iter().any(|note| note.id == selected_id) {
+            if selected_id != CLIP_HISTORY_NOTE_ID
+                && !state.notes.iter().any(|note| note.id == selected_id)
+            {
                 state.selected_note_id = state.notes.first().map(|note| note.id.clone());
             }
         }
@@ -434,7 +445,15 @@ impl WebMemoApp {
             save_state(&state);
         }
 
-        let (editor_title, editor_body, editor_tags) = if let Some(note) = selected_note(&state) {
+        let (editor_title, editor_body, editor_tags) = if state.selected_note_id.as_deref()
+            == Some(CLIP_HISTORY_NOTE_ID)
+        {
+            (
+                "Clipboard History".to_string(),
+                render_clipboard_history_body(&state.clipboard_history),
+                String::new(),
+            )
+        } else if let Some(note) = selected_note(&state) {
             (note.title.clone(), note.body.clone(), note.tags.join(" "))
         } else {
             (String::new(), String::new(), String::new())
@@ -586,6 +605,10 @@ impl WebMemoApp {
         if self.state.selected_note_id.as_deref() == Some(note_id.as_str()) {
             return;
         }
+        if note_id == CLIP_HISTORY_NOTE_ID {
+            self.select_clip_history();
+            return;
+        }
         self.flush_editor_now();
         self.state.selected_note_id = Some(note_id);
         if let Some(note) = selected_note(&self.state).cloned() {
@@ -595,6 +618,10 @@ impl WebMemoApp {
             self.editor_title = note.title.clone();
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
+        } else {
+            self.editor_title.clear();
+            self.editor_body.clear();
+            self.editor_tags.clear();
         }
     }
 
@@ -842,6 +869,9 @@ impl WebMemoApp {
     }
 
     fn sync_selection_for_current_scope(&mut self) {
+        if self.is_clip_history_selected() && !self.state.show_trash {
+            return;
+        }
         let selected_in_scope = self.state.selected_note_id.as_ref().is_some_and(|id| {
             self.state
                 .notes
@@ -904,7 +934,7 @@ impl WebMemoApp {
             return;
         };
         match result {
-            Ok(text) => self.insert_clipboard_text(text),
+            Ok(text) => self.append_clipboard_history(text),
             Err(err) => {
                 self.status_line = match self.state.ui_language {
                     UiLanguage::English => format!("clipboard read failed: {err}"),
@@ -914,37 +944,92 @@ impl WebMemoApp {
         }
     }
 
-    fn insert_clipboard_text(&mut self, raw: String) {
-        let text = raw.replace("\r\n", "\n");
-        let normalized = text.trim().to_string();
-        if normalized.is_empty() {
+    fn append_clipboard_history(&mut self, raw: String) {
+        let Some(normalized) = normalize_clipboard_text(&raw) else {
             self.status_line = self
                 .tr("clipboard is empty", "クリップボードが空です")
                 .to_string();
             return;
+        };
+        if self
+            .state
+            .clipboard_history
+            .first()
+            .is_some_and(|entry| entry.text == normalized)
+        {
+            self.status_line = self
+                .tr("clipboard unchanged", "クリップボードは前回と同じです")
+                .to_string();
+            return;
         }
-
-        if self.state.selected_note_id.is_none() || self.selected_note_is_deleted() {
-            self.create_note();
+        self.state.clipboard_history.insert(
+            0,
+            ClipboardTextEntry {
+                text: normalized,
+                copied_at_ms: now_millis(),
+            },
+        );
+        if self.state.clipboard_history.len() > CLIP_HISTORY_MAX_ITEMS {
+            self.state.clipboard_history.truncate(CLIP_HISTORY_MAX_ITEMS);
         }
-
-        if !self.editor_body.is_empty() && !self.editor_body.ends_with('\n') {
-            self.editor_body.push('\n');
-        }
-        if !self.editor_body.is_empty() {
-            self.editor_body.push('\n');
-        }
-        self.editor_body.push_str(&normalized);
-
-        if self.editor_title.trim().is_empty() {
-            self.editor_title = derive_title(&self.editor_body);
-        }
-
-        self.mark_dirty();
-        self.flush_editor_now();
-        self.status_line = self
-            .tr("clipboard text added", "クリップボードを追加")
+        self.state.selected_note_id = Some(CLIP_HISTORY_NOTE_ID.to_string());
+        self.editor_title = self
+            .tr("Clipboard History", "クリップ履歴")
             .to_string();
+        self.editor_tags.clear();
+        self.editor_body = render_clipboard_history_body(&self.state.clipboard_history);
+        save_state(&self.state);
+        self.status_line = match self.state.ui_language {
+            UiLanguage::English => "clipboard captured".to_string(),
+            UiLanguage::Japanese => "クリップボードを履歴に追加".to_string(),
+        };
+    }
+
+    fn clear_clipboard_history(&mut self) {
+        self.state.clipboard_history.clear();
+        self.editor_body.clear();
+        save_state(&self.state);
+        self.status_line = self
+            .tr("clipboard history cleared", "クリップ履歴をクリア")
+            .to_string();
+    }
+
+    fn select_clip_history(&mut self) {
+        self.flush_editor_now();
+        self.state.selected_note_id = Some(CLIP_HISTORY_NOTE_ID.to_string());
+        self.editor_title = self
+            .tr("Clipboard History", "クリップ履歴")
+            .to_string();
+        self.editor_tags.clear();
+        self.editor_body = render_clipboard_history_body(&self.state.clipboard_history);
+    }
+
+    fn clip_history_updated_label(&self) -> String {
+        self.state
+            .clipboard_history
+            .first()
+            .map(|entry| format_time(entry.copied_at_ms))
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn clip_history_preview_line(&self) -> String {
+        self.state
+            .clipboard_history
+            .first()
+            .map(|entry| truncate_chars(&entry.text, TAGS_MAX_PREVIEW_CHARS))
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn clip_history_title(&self) -> String {
+        format!(
+            "{} ({})",
+            self.tr("Clip History", "クリップ履歴"),
+            self.state.clipboard_history.len()
+        )
+    }
+
+    fn is_clip_history_selected(&self) -> bool {
+        self.state.selected_note_id.as_deref() == Some(CLIP_HISTORY_NOTE_ID)
     }
 
     fn import_payload(&mut self, payload: ImportPayload) {
@@ -1517,10 +1602,52 @@ impl eframe::App for WebMemoApp {
                     ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                     ui.separator();
                     let mut open_note_settings_from_list: Option<String> = None;
+                    let show_clip_history_card = !self.state.show_trash;
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            if show_clip_history_card {
+                                let selected = self.is_clip_history_selected();
+                                let visuals = ui.visuals();
+                                let fill = if selected {
+                                    visuals.selection.bg_fill
+                                } else {
+                                    visuals.widgets.inactive.bg_fill
+                                };
+                                let stroke = if selected {
+                                    visuals.selection.stroke
+                                } else {
+                                    visuals.widgets.inactive.bg_stroke
+                                };
+                                let title = self.clip_history_title();
+                                let updated = self.clip_history_updated_label();
+                                let preview = self.clip_history_preview_line();
+                                let card = egui::Frame::new()
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .corner_radius(egui::CornerRadius::same(12))
+                                    .inner_margin(egui::Margin::same(10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            let title_w = ui.available_width().max(80.0);
+                                            let title_resp = ui.add_sized(
+                                                [title_w, 22.0],
+                                                egui::Label::new(title).truncate().sense(egui::Sense::click()),
+                                            );
+                                            if title_resp.clicked() {
+                                                self.select_clip_history();
+                                            }
+                                        });
+                                        ui.add(egui::Label::new(updated).truncate());
+                                        ui.add(egui::Label::new(preview).truncate());
+                                    });
+                                if card.response.clicked() {
+                                    self.select_clip_history();
+                                }
+                                ui.add_space(6.0);
+                            }
                             for note_id in ids {
                                 let Some(note) = self.state.notes.iter().find(|n| n.id == note_id)
                                 else {
@@ -1632,6 +1759,29 @@ impl eframe::App for WebMemoApp {
                 });
                 return;
             };
+
+            if selected_id == CLIP_HISTORY_NOTE_ID {
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("Clipboard History", "クリップ履歴"));
+                    if ui.button(self.tr("Clear", "クリア")).clicked() {
+                        self.clear_clipboard_history();
+                    }
+                });
+                ui.small(self.tr(
+                    "Web captures clipboard text only when you click Clip+.",
+                    "Web版は Clip+ 押下時のみクリップボードを取り込みます。",
+                ));
+                ui.add_space(6.0);
+                let mut body = render_clipboard_history_body(&self.state.clipboard_history);
+                let available = ui.available_size();
+                ui.add_sized(
+                    [available.x, available.y.max(220.0)],
+                    egui::TextEdit::multiline(&mut body)
+                        .desired_width(f32::INFINITY)
+                        .interactive(false),
+                );
+                return;
+            }
 
             let Some(selected_note) = self
                 .state
@@ -2126,6 +2276,27 @@ fn ensure_state_integrity(state: &mut WebState) {
         }
     }
 
+    let mut normalized_clip = Vec::new();
+    for entry in state.clipboard_history.drain(..) {
+        let Some(text) = normalize_clipboard_text(&entry.text) else {
+            continue;
+        };
+        if normalized_clip
+            .iter()
+            .any(|existing: &ClipboardTextEntry| existing.text == text)
+        {
+            continue;
+        }
+        normalized_clip.push(ClipboardTextEntry {
+            text,
+            copied_at_ms: entry.copied_at_ms,
+        });
+        if normalized_clip.len() >= CLIP_HISTORY_MAX_ITEMS {
+            break;
+        }
+    }
+    state.clipboard_history = normalized_clip;
+
     let existing_ids: Vec<String> = state.notes.iter().map(|note| note.id.clone()).collect();
     let mut normalized_recent = Vec::new();
     for id in state.recent_note_ids.drain(..) {
@@ -2144,6 +2315,9 @@ fn ensure_state_integrity(state: &mut WebState) {
 
     if !is_supported_font_preset(&state.ui_font_preset) {
         state.ui_font_preset = FONT_PRESET_DEFAULT.to_string();
+    }
+    if state.show_trash && state.selected_note_id.as_deref() == Some(CLIP_HISTORY_NOTE_ID) {
+        state.selected_note_id = state.notes.iter().find(|note| note.deleted).map(|note| note.id.clone());
     }
     state.ui_zoom = state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
     if state.ui_text_color_rgb == [0, 0, 0] {
@@ -2309,6 +2483,7 @@ fn scoped_storage_key(base_key: &str) -> String {
 
 fn state_to_meta(state: &WebState) -> WebStateMeta {
     WebStateMeta {
+        clipboard_history: state.clipboard_history.clone(),
         folders: state.folders.clone(),
         recent_note_ids: state.recent_note_ids.clone(),
         selected_note_id: state.selected_note_id.clone(),
@@ -2332,6 +2507,7 @@ fn state_to_meta(state: &WebState) -> WebStateMeta {
 fn state_from_meta(meta: WebStateMeta) -> WebState {
     WebState {
         notes: Vec::new(),
+        clipboard_history: meta.clipboard_history,
         folders: meta.folders,
         recent_note_ids: meta.recent_note_ids,
         selected_note_id: meta.selected_note_id,
@@ -2468,6 +2644,37 @@ fn format_storage_error(context: &str, err: JsValue) -> String {
         return format!("保存失敗: {context} で容量上限に達しました。不要メモ整理を推奨。");
     }
     format!("保存失敗: {context} に失敗 ({text})")
+}
+
+fn normalize_clipboard_text(raw: &str) -> Option<String> {
+    let normalized = raw
+        .replace("\r\n", "\n")
+        .chars()
+        .filter(|ch| !matches!(*ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{2060}'))
+        .collect::<String>();
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(trimmed, CLIP_ITEM_MAX_CHARS))
+}
+
+fn render_clipboard_history_body(entries: &[ClipboardTextEntry]) -> String {
+    if entries.is_empty() {
+        return "No clipboard history yet.\nClip+ でテキストを追加".to_string();
+    }
+    let mut out = String::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("\n\n---\n\n");
+        }
+        out.push_str(&format!(
+            "{}\n{}",
+            format_time(entry.copied_at_ms),
+            entry.text
+        ));
+    }
+    out
 }
 
 fn set_boot_status(message: &str) {
@@ -2667,6 +2874,12 @@ fn store_import_result(result: Result<ImportPayload, String>) {
 
 fn take_import_result() -> Option<Result<ImportPayload, String>> {
     IMPORT_RESULT.with(|slot| slot.borrow_mut().take())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClipboardTextEntry {
+    text: String,
+    copied_at_ms: i64,
 }
 
 fn store_clipboard_text_result(result: Result<String, String>) {
