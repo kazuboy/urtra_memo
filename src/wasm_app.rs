@@ -377,6 +377,10 @@ struct WebMemoApp {
     defer_empty_note_creation: bool,
     show_folder_manager: bool,
     show_menu: bool,
+    show_note_settings: bool,
+    note_settings_note_id: Option<String>,
+    note_settings_title: String,
+    note_settings_tags: String,
 }
 
 impl WebMemoApp {
@@ -439,6 +443,10 @@ impl WebMemoApp {
             defer_empty_note_creation,
             show_folder_manager: false,
             show_menu: false,
+            show_note_settings: false,
+            note_settings_note_id: None,
+            note_settings_title: String::new(),
+            note_settings_tags: String::new(),
         };
         app.sync_selection_for_current_scope();
         app
@@ -577,6 +585,50 @@ impl WebMemoApp {
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
         }
+    }
+
+    fn open_note_settings(&mut self, note_id: String) {
+        if let Some(note) = self.state.notes.iter().find(|n| n.id == note_id) {
+            self.note_settings_note_id = Some(note.id.clone());
+            self.note_settings_title = note.title.clone();
+            self.note_settings_tags = note.tags.join(" ");
+            self.show_note_settings = true;
+        }
+    }
+
+    fn apply_note_settings(&mut self) {
+        let Some(note_id) = self.note_settings_note_id.clone() else {
+            return;
+        };
+        let Some(note_index) = self.state.notes.iter().position(|n| n.id == note_id) else {
+            return;
+        };
+        if self.state.notes[note_index].deleted {
+            return;
+        }
+        let new_title = self.note_settings_title.trim().to_string();
+        let new_tags = normalize_tags(&self.note_settings_tags);
+        if self.state.notes[note_index].title == new_title
+            && self.state.notes[note_index].tags == new_tags
+        {
+            self.show_note_settings = false;
+            return;
+        }
+        self.state.notes[note_index].title = new_title;
+        self.state.notes[note_index].tags = new_tags;
+        self.state.notes[note_index].updated_at_ms = now_millis();
+        let updated_title = self.state.notes[note_index].title.clone();
+        let updated_tags = self.state.notes[note_index].tags.join(" ");
+        sort_notes_by_updated_desc(&mut self.state.notes);
+        if self.state.selected_note_id.as_deref() == Some(note_id.as_str()) {
+            self.editor_title = updated_title;
+            self.editor_tags = updated_tags;
+        }
+        self.sync_selection_for_current_scope();
+        save_state(&self.state);
+        self.status_line = self.tr("note settings saved", "note settings saved").to_string();
+        self.show_note_settings = false;
+        self.note_settings_note_id = None;
     }
 
     fn touch_recent_note(&mut self, note_id: &str) {
@@ -1310,6 +1362,7 @@ impl eframe::App for WebMemoApp {
                     };
                     ui.label(format!("{list_name}: {} / {scope_total}", ids.len()));
                     ui.separator();
+                    let mut open_note_settings_from_list: Option<String> = None;
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -1349,6 +1402,7 @@ impl eframe::App for WebMemoApp {
                                 } else {
                                     visuals.widgets.inactive.bg_stroke
                                 };
+                                let mut settings_clicked = false;
                                 let card = egui::Frame::new()
                                     .fill(fill)
                                     .stroke(stroke)
@@ -1356,17 +1410,36 @@ impl eframe::App for WebMemoApp {
                                     .inner_margin(egui::Margin::same(10))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
-                                        ui.add(egui::Label::new(title).truncate());
+                                        ui.horizontal(|ui| {
+                                            let title_w = (ui.available_width() - 40.0).max(80.0);
+                                            ui.add_sized(
+                                                [title_w, 22.0],
+                                                egui::Label::new(title).truncate(),
+                                            );
+                                            if !note.deleted
+                                                && ui
+                                                    .small_button("...")
+                                                    .on_hover_text(self.tr("Settings", "Settings"))
+                                                    .clicked()
+                                            {
+                                                settings_clicked = true;
+                                            }
+                                        });
                                         ui.add(egui::Label::new(updated).truncate());
                                         ui.add(egui::Label::new(tags_line).truncate());
                                     });
                                 let clicked = card.response.interact(egui::Sense::click()).clicked();
-                                if clicked {
+                                if settings_clicked {
+                                    open_note_settings_from_list = Some(note.id.clone());
+                                } else if clicked {
                                     self.select_note(note.id.clone());
                                 }
                                 ui.add_space(6.0);
                             }
                         });
+                    if let Some(note_id) = open_note_settings_from_list {
+                        self.open_note_settings(note_id);
+                    }
                 });
         }
 
@@ -1738,6 +1811,100 @@ impl eframe::App for WebMemoApp {
                     });
                 });
             self.show_folder_manager = open;
+        }
+
+        if self.show_note_settings {
+            let mut open = self.show_note_settings;
+            let mut do_save = false;
+            let mut do_delete = false;
+            let mut do_restore = false;
+            let mut do_delete_forever = false;
+            let target_note = self
+                .note_settings_note_id
+                .as_ref()
+                .and_then(|id| self.state.notes.iter().find(|n| n.id == *id))
+                .cloned();
+
+            egui::Window::new(self.tr("Note Settings", "Note Settings"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(360.0)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let Some(note) = target_note.as_ref() else {
+                        ui.label(self.tr("Note not found", "Note not found"));
+                        return;
+                    };
+
+                    if note.deleted {
+                        ui.label(self.tr("This note is in Trash.", "This note is in Trash."));
+                        ui.horizontal(|ui| {
+                            if ui.button(self.tr("Restore", "Restore")).clicked() {
+                                do_restore = true;
+                            }
+                            if ui
+                                .button(self.tr("Delete Forever", "Delete Forever"))
+                                .clicked()
+                            {
+                                do_delete_forever = true;
+                            }
+                        });
+                        return;
+                    }
+
+                    let title_hint = self.tr("(untitled)", "(untitled)");
+                    let tags_hint = self.tr("work idea rust", "work idea rust");
+                    ui.label(self.tr("Title", "Title"));
+                    ui.add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::TextEdit::singleline(&mut self.note_settings_title)
+                            .hint_text(title_hint),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(self.tr("Tags", "Tags"));
+                    ui.add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::TextEdit::singleline(&mut self.note_settings_tags).hint_text(tags_hint),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.tr("Save", "Save")).clicked() {
+                            do_save = true;
+                        }
+                        if ui.button(self.tr("Delete", "Delete")).clicked() {
+                            do_delete = true;
+                        }
+                    });
+                });
+
+            self.show_note_settings = open;
+
+            if do_save {
+                self.apply_note_settings();
+            } else if do_delete {
+                if let Some(id) = self.note_settings_note_id.clone() {
+                    self.select_note(id);
+                    self.delete_selected_note();
+                }
+                self.show_note_settings = false;
+                self.note_settings_note_id = None;
+            } else if do_restore {
+                if let Some(id) = self.note_settings_note_id.clone() {
+                    self.select_note(id);
+                    self.restore_selected_note();
+                }
+                self.show_note_settings = false;
+                self.note_settings_note_id = None;
+            } else if do_delete_forever {
+                if let Some(id) = self.note_settings_note_id.clone() {
+                    self.select_note(id);
+                    self.purge_selected_note();
+                }
+                self.show_note_settings = false;
+                self.note_settings_note_id = None;
+            } else if !self.show_note_settings {
+                self.note_settings_note_id = None;
+            }
         }
     }
 }
