@@ -1879,17 +1879,56 @@ impl eframe::App for WebMemoApp {
                 total_available.y.max(220.0)
             };
             let editor_hint = self.tr("Write your memo...", "メモを書いてください...");
-            let edit_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                ui.add_sized(
-                    [total_available.x, editor_height.max(220.0)],
-                    egui::TextEdit::multiline(&mut self.editor_body)
-                        .hint_text(editor_hint)
-                        .desired_rows(10)
-                        .desired_width(f32::INFINITY),
-                )
+            let edit_output = ui.add_enabled_ui(!selected_is_deleted, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("note_editor_scroll")
+                    .max_height(editor_height.max(220.0))
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(
+                        egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                    )
+                    .scroll_source(egui::containers::scroll_area::ScrollSource {
+                        scroll_bar: true,
+                        drag: false,
+                        mouse_wheel: true,
+                    })
+                    .show(ui, |ui| {
+                        let desired_rows = self.editor_body.lines().count().max(12);
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.editor_body)
+                                .hint_text(editor_hint)
+                                .desired_rows(desired_rows)
+                                .desired_width(f32::INFINITY),
+                        )
+                    })
             });
-            if edit_resp.inner.changed() {
+            if edit_output.inner.inner.changed() {
                 self.mark_dirty();
+            }
+            if !selected_is_deleted
+                && edit_output.inner.inner.dragged()
+                && ui.input(|i| i.pointer.primary_down())
+            {
+                if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    let viewport = edit_output.inner.inner_rect;
+                    let edge = 28.0;
+                    let top_trigger = viewport.top() + edge;
+                    let bottom_trigger = viewport.bottom() - edge;
+                    let mut delta = 0.0_f32;
+                    if pointer_pos.y < top_trigger {
+                        delta = -((top_trigger - pointer_pos.y) / edge * 18.0).clamp(2.0, 18.0);
+                    } else if pointer_pos.y > bottom_trigger {
+                        delta = ((pointer_pos.y - bottom_trigger) / edge * 18.0).clamp(2.0, 18.0);
+                    }
+                    if delta != 0.0 {
+                        let mut state = edit_output.inner.state;
+                        let max_offset =
+                            (edit_output.inner.content_size.y - viewport.height()).max(0.0);
+                        state.offset.y = (state.offset.y + delta).clamp(0.0, max_offset);
+                        state.store(ui.ctx(), edit_output.inner.id);
+                        ui.ctx().request_repaint();
+                    }
+                }
             }
             if selected_is_deleted {
                 ui.small(self.tr(
