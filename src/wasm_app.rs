@@ -1880,19 +1880,12 @@ impl eframe::App for WebMemoApp {
             };
             let editor_hint = self.tr("Write your memo...", "メモを書いてください...");
             let edit_resp = ui.add_enabled_ui(!selected_is_deleted, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("note_editor_scroll")
-                    .max_height(editor_height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add_sized(
-                            [ui.available_width(), editor_height.max(220.0)],
-                            egui::TextEdit::multiline(&mut self.editor_body)
-                                .hint_text(editor_hint)
-                                .desired_width(f32::INFINITY),
-                        )
-                    })
-                    .inner
+                ui.add_sized(
+                    [total_available.x, editor_height.max(220.0)],
+                    egui::TextEdit::multiline(&mut self.editor_body)
+                        .hint_text(editor_hint)
+                        .desired_width(f32::INFINITY),
+                )
             });
             if edit_resp.inner.changed() {
                 self.mark_dirty();
