@@ -36,6 +36,7 @@ const FONT_PRESET_SERIF: &str = "serif";
 const FONT_PRESET_MONO: &str = "mono";
 const WEB_CJK_FONT_ID: &str = "web_cjk_mplus";
 const CLIP_HISTORY_NOTE_ID: &str = "__web_clip_history__";
+const SEARCH_FIELD_ID: &str = "web_search_field";
 const CLIP_HISTORY_MAX_ITEMS: usize = 400;
 const CLIP_ITEM_MAX_CHARS: usize = 8000;
 const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
@@ -163,8 +164,28 @@ export async function um_idb_load_state(dbName) {
   return JSON.stringify(base);
 }
 
+export function um_install_shortcut_guard() {
+  if (window.__ultraMemoShortcutGuardInstalled) return;
+  window.__ultraMemoShortcutGuardInstalled = true;
+  window.addEventListener("keydown", (event) => {
+    const key = String(event.key || "").toLowerCase();
+    const cmd = event.ctrlKey || event.metaKey;
+    const guarded =
+      (cmd && key === "s") ||
+      (cmd && key === "f") ||
+      (cmd && key === "m") ||
+      (cmd && event.shiftKey && key === "f") ||
+      (cmd && event.altKey && key === "n") ||
+      (cmd && ["+", "=", "-", "0", "arrowup", "arrowdown", ","].includes(key)) ||
+      (event.altKey && !cmd && !event.shiftKey && ["1", "2", "3"].includes(key));
+    if (guarded) event.preventDefault();
+  }, { capture: true });
+}
+
 "#)]
 extern "C" {
+    fn um_install_shortcut_guard();
+
     #[wasm_bindgen(catch)]
     fn um_idb_save_state(db_name: &str, state_json: &str) -> Result<js_sys::Promise, JsValue>;
 
@@ -334,6 +355,7 @@ struct ImportPayload {
 }
 
 pub fn run_web() {
+    um_install_shortcut_guard();
     wasm_bindgen_futures::spawn_local(async move {
         set_boot_status("Ultra Memo Web: initializing...");
         let Some(window) = web_sys::window() else {
@@ -807,6 +829,138 @@ impl WebMemoApp {
         self.state.show_trash = show_trash;
         self.sync_selection_for_current_scope();
         save_state(&self.state);
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let ids = self.filtered_note_ids();
+        if ids.is_empty() {
+            return;
+        }
+
+        let current_index = self
+            .state
+            .selected_note_id
+            .as_deref()
+            .and_then(|id| ids.iter().position(|note_id| note_id == id));
+        let len = ids.len() as isize;
+        let base = current_index
+            .map(|idx| idx as isize)
+            .unwrap_or(if delta >= 0 { -1 } else { len });
+        let target = (base + delta).clamp(0, len - 1) as usize;
+        if let Some(note_id) = ids.get(target) {
+            self.select_note(note_id.clone());
+        }
+    }
+
+    fn process_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.show_menu
+            || self.show_folder_manager
+            || self.show_note_settings
+            || self.show_folder_delete_confirm
+        {
+            return;
+        }
+
+        let keyboard_captured = ctx.wants_keyboard_input();
+        let (
+            save_shortcut,
+            new_note_shortcut,
+            focus_search_shortcut,
+            markdown_shortcut,
+            focus_mode_shortcut,
+            tab_all_shortcut,
+            tab_recent_shortcut,
+            tab_trash_shortcut,
+            zoom_in_shortcut,
+            zoom_out_shortcut,
+            zoom_reset_shortcut,
+            list_up_shortcut,
+            list_down_shortcut,
+            delete_shortcut,
+            menu_shortcut,
+        ) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            let alt_only =
+                i.modifiers.alt
+                    && !i.modifiers.command
+                    && !i.modifiers.ctrl
+                    && !i.modifiers.mac_cmd
+                    && !i.modifiers.shift;
+            (
+                cmd && i.key_pressed(egui::Key::S),
+                cmd && i.modifiers.alt && !i.modifiers.shift && i.key_pressed(egui::Key::N),
+                cmd && i.key_pressed(egui::Key::F),
+                cmd && i.key_pressed(egui::Key::M),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
+                alt_only && i.key_pressed(egui::Key::Num1),
+                alt_only && i.key_pressed(egui::Key::Num2),
+                alt_only && i.key_pressed(egui::Key::Num3),
+                cmd && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)),
+                cmd && i.key_pressed(egui::Key::Minus),
+                cmd && i.key_pressed(egui::Key::Num0),
+                cmd && i.key_pressed(egui::Key::ArrowUp),
+                cmd && i.key_pressed(egui::Key::ArrowDown),
+                !keyboard_captured && i.modifiers.is_none() && i.key_pressed(egui::Key::Delete),
+                cmd && i.key_pressed(egui::Key::Comma),
+            )
+        });
+
+        if save_shortcut {
+            self.flush_editor_now();
+        }
+        if new_note_shortcut {
+            self.create_note();
+        }
+        if focus_search_shortcut {
+            self.state.focus_mode = false;
+            ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(SEARCH_FIELD_ID)));
+            self.status_line = self.tr("search focused", "検索へフォーカス").to_string();
+        }
+        if markdown_shortcut {
+            self.state.markdown_render_mode = !self.state.markdown_render_mode;
+            self.status_line = self
+                .tr("markdown preview toggled", "Markdown プレビュー切替")
+                .to_string();
+            save_state(&self.state);
+        }
+        if focus_mode_shortcut {
+            self.state.focus_mode = !self.state.focus_mode;
+            self.status_line = self.tr("focus mode toggled", "集中モード切替").to_string();
+            save_state(&self.state);
+        }
+        if tab_all_shortcut {
+            self.set_list_mode(false, false);
+            self.status_line = self.tr("tab: all", "タブ: すべて").to_string();
+        }
+        if tab_recent_shortcut {
+            self.set_list_mode(true, false);
+            self.status_line = self.tr("tab: recent", "タブ: 最近").to_string();
+        }
+        if tab_trash_shortcut {
+            self.set_list_mode(false, true);
+            self.status_line = self.tr("tab: trash", "タブ: ゴミ箱").to_string();
+        }
+        if zoom_in_shortcut {
+            self.nudge_ui_zoom(UI_ZOOM_STEP);
+        }
+        if zoom_out_shortcut {
+            self.nudge_ui_zoom(-UI_ZOOM_STEP);
+        }
+        if zoom_reset_shortcut {
+            self.set_ui_zoom(1.0);
+        }
+        if list_up_shortcut {
+            self.move_selection(-1);
+        }
+        if list_down_shortcut {
+            self.move_selection(1);
+        }
+        if delete_shortcut {
+            self.delete_selected_note();
+        }
+        if menu_shortcut {
+            self.show_menu = true;
+        }
     }
 
     fn selected_note_is_deleted(&self) -> bool {
@@ -1390,6 +1544,7 @@ impl eframe::App for WebMemoApp {
         self.process_persist_events();
         self.process_import_result();
         self.process_paste_events(ctx);
+        self.process_shortcuts(ctx);
         self.state.ui_zoom = self.state.ui_zoom.clamp(UI_ZOOM_MIN, UI_ZOOM_MAX);
         ctx.set_zoom_factor(self.state.ui_zoom);
         apply_apple_like_style(
@@ -1438,6 +1593,7 @@ impl eframe::App for WebMemoApp {
                 let search = ui.add_sized(
                     [search_width, 30.0],
                     egui::TextEdit::singleline(&mut self.state.search_query)
+                        .id(egui::Id::new(SEARCH_FIELD_ID))
                         .hint_text(search_hint),
                 );
                 if search.changed() {
@@ -2075,6 +2231,49 @@ impl eframe::App for WebMemoApp {
                     });
 
                     ui.separator();
+                    ui.label(self.tr("Keyboard shortcuts", "ショートカット"));
+                    egui::Grid::new("web_shortcuts_grid")
+                        .num_columns(2)
+                        .spacing([18.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            shortcut_row(ui, self.tr("Save now", "今すぐ保存"), "Ctrl/Cmd+S");
+                            shortcut_row(ui, self.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
+                            shortcut_row(ui, self.tr("Focus search", "検索へフォーカス"), "Ctrl/Cmd+F");
+                            shortcut_row(
+                                ui,
+                                self.tr("Toggle Markdown preview", "Markdown プレビュー切替"),
+                                "Ctrl/Cmd+M",
+                            );
+                            shortcut_row(
+                                ui,
+                                self.tr("Toggle focus mode", "集中モード切替"),
+                                "Ctrl/Cmd+Shift+F",
+                            );
+                            shortcut_row(
+                                ui,
+                                self.tr("All / Recent / Trash", "すべて / 最近 / ゴミ箱"),
+                                "Alt+1 / Alt+2 / Alt+3",
+                            );
+                            shortcut_row(
+                                ui,
+                                self.tr("Previous / next note", "前後のメモへ移動"),
+                                "Ctrl/Cmd+↑ / Ctrl/Cmd+↓",
+                            );
+                            shortcut_row(
+                                ui,
+                                self.tr("UI size down / reset / up", "UIサイズ 縮小 / 標準 / 拡大"),
+                                "Ctrl/Cmd+- / Ctrl/Cmd+0 / Ctrl/Cmd++",
+                            );
+                            shortcut_row(ui, self.tr("Open menu", "メニューを開く"), "Ctrl/Cmd+,");
+                            shortcut_row(
+                                ui,
+                                self.tr("Move selected note to Trash", "選択メモをゴミ箱へ"),
+                                "Delete",
+                            );
+                        });
+
+                    ui.separator();
                     ui.label(self.tr("Data I/O", "データ入出力"));
                     if ui
                         .button(self.tr("Export JSON (All notes)", "JSONを書き出し（全メモ）"))
@@ -2311,6 +2510,12 @@ impl eframe::App for WebMemoApp {
             }
         }
     }
+}
+
+fn shortcut_row(ui: &mut egui::Ui, action: &str, keys: &str) {
+    ui.label(action);
+    ui.monospace(keys);
+    ui.end_row();
 }
 
 fn normalize_tags(raw: &str) -> Vec<String> {
