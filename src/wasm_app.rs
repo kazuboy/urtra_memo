@@ -413,6 +413,7 @@ struct WebMemoApp {
     defer_empty_note_creation: bool,
     show_folder_manager: bool,
     show_menu: bool,
+    show_shortcuts: bool,
     show_note_settings: bool,
     note_settings_note_id: Option<String>,
     note_settings_title: String,
@@ -499,6 +500,7 @@ impl WebMemoApp {
             defer_empty_note_creation,
             show_folder_manager: false,
             show_menu: false,
+            show_shortcuts: false,
             show_note_settings: false,
             note_settings_note_id: None,
             note_settings_title: String::new(),
@@ -854,6 +856,7 @@ impl WebMemoApp {
 
     fn process_shortcuts(&mut self, ctx: &egui::Context) {
         if self.show_menu
+            || self.show_shortcuts
             || self.show_folder_manager
             || self.show_note_settings
             || self.show_folder_delete_confirm
@@ -1617,6 +1620,9 @@ impl eframe::App for WebMemoApp {
                 if ui.button(self.tr("Menu", "メニュー")).clicked() {
                     self.show_menu = true;
                 }
+                if ui.button(self.tr("Shortcuts", "ショートカット")).clicked() {
+                    self.show_shortcuts = true;
+                }
                 if let Some((selected_id, selected_is_deleted, current_folder_id)) =
                     selected_note_meta.clone()
                 {
@@ -2230,48 +2236,6 @@ impl eframe::App for WebMemoApp {
                         }
                     });
 
-                    ui.separator();
-                    ui.label(self.tr("Keyboard shortcuts", "ショートカット"));
-                    egui::Grid::new("web_shortcuts_grid")
-                        .num_columns(2)
-                        .spacing([18.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            shortcut_row(ui, self.tr("Save now", "今すぐ保存"), "Ctrl/Cmd+S");
-                            shortcut_row(ui, self.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
-                            shortcut_row(ui, self.tr("Focus search", "検索へフォーカス"), "Ctrl/Cmd+F");
-                            shortcut_row(
-                                ui,
-                                self.tr("Toggle Markdown preview", "Markdown プレビュー切替"),
-                                "Ctrl/Cmd+M",
-                            );
-                            shortcut_row(
-                                ui,
-                                self.tr("Toggle focus mode", "集中モード切替"),
-                                "Ctrl/Cmd+Shift+F",
-                            );
-                            shortcut_row(
-                                ui,
-                                self.tr("All / Recent / Trash", "すべて / 最近 / ゴミ箱"),
-                                "Alt+1 / Alt+2 / Alt+3",
-                            );
-                            shortcut_row(
-                                ui,
-                                self.tr("Previous / next note", "前後のメモへ移動"),
-                                "Ctrl/Cmd+↑ / Ctrl/Cmd+↓",
-                            );
-                            shortcut_row(
-                                ui,
-                                self.tr("UI size down / reset / up", "UIサイズ 縮小 / 標準 / 拡大"),
-                                "Ctrl/Cmd+- / Ctrl/Cmd+0 / Ctrl/Cmd++",
-                            );
-                            shortcut_row(ui, self.tr("Open menu", "メニューを開く"), "Ctrl/Cmd+,");
-                            shortcut_row(
-                                ui,
-                                self.tr("Move selected note to Trash", "選択メモをゴミ箱へ"),
-                                "Delete",
-                            );
-                        });
 
                     ui.separator();
                     ui.label(self.tr("Data I/O", "データ入出力"));
@@ -2305,6 +2269,19 @@ impl eframe::App for WebMemoApp {
         }
         if menu_was_open && !self.show_menu {
             save_state(&self.state);
+        }
+
+        if self.show_shortcuts {
+            let mut open = self.show_shortcuts;
+            egui::Window::new(self.tr("Keyboard shortcuts", "ショートカット"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    draw_shortcuts_grid(self, ui);
+                });
+            self.show_shortcuts = open;
         }
 
         if self.show_folder_manager {
@@ -2510,6 +2487,49 @@ impl eframe::App for WebMemoApp {
             }
         }
     }
+}
+
+fn draw_shortcuts_grid(app: &WebMemoApp, ui: &mut egui::Ui) {
+    egui::Grid::new("web_shortcuts_window_grid")
+        .num_columns(2)
+        .spacing([18.0, 4.0])
+        .striped(true)
+        .show(ui, |ui| {
+            shortcut_row(ui, app.tr("Save now", "今すぐ保存"), "Ctrl/Cmd+S");
+            shortcut_row(ui, app.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
+            shortcut_row(ui, app.tr("Focus search", "検索へフォーカス"), "Ctrl/Cmd+F");
+            shortcut_row(
+                ui,
+                app.tr("Toggle Markdown preview", "Markdown プレビュー切替"),
+                "Ctrl/Cmd+M",
+            );
+            shortcut_row(
+                ui,
+                app.tr("Toggle focus mode", "集中モード切替"),
+                "Ctrl/Cmd+Shift+F",
+            );
+            shortcut_row(
+                ui,
+                app.tr("All / Recent / Trash", "すべて / 最近 / ゴミ箱"),
+                "Alt+1 / Alt+2 / Alt+3",
+            );
+            shortcut_row(
+                ui,
+                app.tr("Previous / next note", "前後のメモへ移動"),
+                "Ctrl/Cmd+↑ / Ctrl/Cmd+↓",
+            );
+            shortcut_row(
+                ui,
+                app.tr("UI size down / reset / up", "UIサイズ 縮小 / 標準 / 拡大"),
+                "Ctrl/Cmd+- / Ctrl/Cmd+0 / Ctrl/Cmd++",
+            );
+            shortcut_row(ui, app.tr("Open menu", "メニューを開く"), "Ctrl/Cmd+,");
+            shortcut_row(
+                ui,
+                app.tr("Move selected note to Trash", "選択メモをゴミ箱へ"),
+                "Delete",
+            );
+        });
 }
 
 fn shortcut_row(ui: &mut egui::Ui, action: &str, keys: &str) {
