@@ -1,4 +1,4 @@
-use crate::model::{derive_title, safe_title, truncate_chars};
+use crate::model::{derive_title, safe_title, title_or_derived, truncate_chars};
 use chrono::{TimeZone, Utc};
 use eframe::egui;
 use eframe::egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
@@ -729,16 +729,19 @@ impl WebMemoApp {
         if self.state.notes[index].deleted {
             return false;
         }
-        let normalized_title = self.editor_title.trim().to_string();
+        let normalized_title = title_or_derived(&self.editor_title, &self.editor_body);
         let normalized_tags = normalize_tags(&self.editor_tags);
         let note = &mut self.state.notes[index];
         if note.title == normalized_title && note.body == self.editor_body && note.tags == normalized_tags {
             return false;
         }
-        note.title = normalized_title;
+        note.title = normalized_title.clone();
         note.body = self.editor_body.clone();
         note.tags = normalized_tags;
         note.updated_at_ms = now_millis();
+        if self.editor_title.trim().is_empty() {
+            self.editor_title = normalized_title;
+        }
         sort_notes_by_updated_desc(&mut self.state.notes);
         true
     }
@@ -1879,8 +1882,9 @@ impl eframe::App for WebMemoApp {
                                 };
                                 let selected = self.state.selected_note_id.as_deref()
                                     == Some(note.id.as_str());
+                                let effective_title = title_or_derived(&note.title, &note.body);
                                 let mut title = truncate_chars(
-                                    safe_title(&note.title),
+                                    safe_title(&effective_title),
                                     TITLE_MAX_PREVIEW_CHARS,
                                 );
                                 if note.deleted {

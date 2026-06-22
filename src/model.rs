@@ -131,6 +131,16 @@ pub fn safe_title(title: &str) -> &str {
     }
 }
 
+/// Returns an explicit title, or derives one from body when the title is blank.
+pub fn title_or_derived(title: &str, body: &str) -> String {
+    let trimmed_title = title.trim();
+    if trimmed_title.is_empty() {
+        derive_title(body)
+    } else {
+        trimmed_title.to_string()
+    }
+}
+
 /// Truncates by character count and appends `...` when needed.
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
@@ -176,7 +186,9 @@ pub fn normalize_tags(raw: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_title, normalize_tag_token, normalize_tags, truncate_chars};
+    use super::{
+        derive_title, normalize_tag_token, normalize_tags, title_or_derived, truncate_chars,
+    };
 
     #[test]
     fn derive_title_skips_empty_and_markdown_heading() {
@@ -191,6 +203,16 @@ mod tests {
             derive_title(long),
             "1234567890123456789012345678901234567..."
         );
+    }
+
+    #[test]
+    fn title_or_derived_keeps_explicit_title() {
+        assert_eq!(title_or_derived("  Project title  ", "# Body title"), "Project title");
+    }
+
+    #[test]
+    fn title_or_derived_uses_body_when_title_is_blank() {
+        assert_eq!(title_or_derived(" ", "\n# Body title\nmore"), "Body title");
     }
 
     #[test]
