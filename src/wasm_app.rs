@@ -2445,11 +2445,16 @@ impl eframe::App for WebMemoApp {
                     let title_hint = self.tr("(untitled)", "(無題)");
                     let tags_hint = self.tr("work idea rust", "work idea rust");
                     ui.label(self.tr("Title", "タイトル"));
-                    ui.add_sized(
+                    let title_input = ui.add_sized(
                         [ui.available_width(), 30.0],
                         egui::TextEdit::singleline(&mut self.note_settings_title)
                             .hint_text(title_hint),
                     );
+                    if title_input.lost_focus()
+                        && ui.input(|input_state| input_state.key_pressed(egui::Key::Enter))
+                    {
+                        do_save = true;
+                    }
                     ui.add_space(8.0);
                     ui.label(self.tr("Tags", "タグ"));
                     ui.add_sized(
