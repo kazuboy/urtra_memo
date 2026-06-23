@@ -141,6 +141,25 @@ pub fn title_or_derived(title: &str, body: &str) -> String {
     }
 }
 
+/// Returns an edited title, preserves an existing title, or derives from body.
+pub fn title_or_existing_or_derived(
+    edited_title: &str,
+    existing_title: &str,
+    body: &str,
+) -> String {
+    let trimmed_edited = edited_title.trim();
+    if !trimmed_edited.is_empty() {
+        return trimmed_edited.to_string();
+    }
+
+    let trimmed_existing = existing_title.trim();
+    if !trimmed_existing.is_empty() {
+        return trimmed_existing.to_string();
+    }
+
+    derive_title(body)
+}
+
 /// Truncates by character count and appends `...` when needed.
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
@@ -187,7 +206,8 @@ pub fn normalize_tags(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_title, normalize_tag_token, normalize_tags, title_or_derived, truncate_chars,
+        derive_title, normalize_tag_token, normalize_tags, title_or_derived,
+        title_or_existing_or_derived, truncate_chars,
     };
 
     #[test]
@@ -213,6 +233,22 @@ mod tests {
     #[test]
     fn title_or_derived_uses_body_when_title_is_blank() {
         assert_eq!(title_or_derived(" ", "\n# Body title\nmore"), "Body title");
+    }
+
+    #[test]
+    fn title_or_existing_or_derived_preserves_existing_title_when_edit_is_blank() {
+        assert_eq!(
+            title_or_existing_or_derived(" ", " Existing title ", ""),
+            "Existing title"
+        );
+    }
+
+    #[test]
+    fn title_or_existing_or_derived_uses_body_when_titles_are_blank() {
+        assert_eq!(
+            title_or_existing_or_derived("", " ", "# Body title"),
+            "Body title"
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use crate::model::{derive_title, safe_title, title_or_derived, truncate_chars};
+use crate::model::{
+    derive_title, safe_title, title_or_derived, title_or_existing_or_derived, truncate_chars,
+};
 use chrono::{TimeZone, Utc};
 use eframe::egui;
 use eframe::egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
@@ -729,7 +731,11 @@ impl WebMemoApp {
         if self.state.notes[index].deleted {
             return false;
         }
-        let normalized_title = title_or_derived(&self.editor_title, &self.editor_body);
+        let normalized_title = title_or_existing_or_derived(
+            &self.editor_title,
+            &self.state.notes[index].title,
+            &self.editor_body,
+        );
         let normalized_tags = normalize_tags(&self.editor_tags);
         let note = &mut self.state.notes[index];
         if note.title == normalized_title && note.body == self.editor_body && note.tags == normalized_tags {
