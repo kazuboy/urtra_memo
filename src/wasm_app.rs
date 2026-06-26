@@ -24,6 +24,7 @@ const MAIN_FOLDER_NAME: &str = "Main";
 const TITLE_MAX_PREVIEW_CHARS: usize = 64;
 const TAGS_MAX_PREVIEW_CHARS: usize = 30;
 const AUTOSAVE_DELAY_MS: i64 = 700;
+const EDITOR_BOTTOM_PADDING: f32 = 96.0;
 const LIST_PANEL_MIN_WIDTH: f32 = 220.0;
 const LIST_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
@@ -2066,12 +2067,14 @@ impl eframe::App for WebMemoApp {
                     })
                     .show(ui, |ui| {
                         let desired_rows = self.editor_body.lines().count().max(12);
-                        ui.add(
+                        let response = ui.add(
                             egui::TextEdit::multiline(&mut self.editor_body)
                                 .hint_text(editor_hint)
                                 .desired_rows(desired_rows)
                                 .desired_width(f32::INFINITY),
-                        )
+                        );
+                        ui.add_space(EDITOR_BOTTOM_PADDING);
+                        response
                     })
             });
             if edit_output.inner.inner.changed() {

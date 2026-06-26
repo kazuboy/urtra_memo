@@ -6,6 +6,8 @@ use super::markdown::render_markdown_preview;
 use super::ui_style::icon_button;
 use super::{MemoGuiApp, ICON_MENU};
 
+const EDITOR_BOTTOM_PADDING: f32 = 96.0;
+
 impl MemoGuiApp {
     pub(super) fn draw_central_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -189,6 +191,7 @@ impl MemoGuiApp {
                             editor = editor.interactive(false);
                         }
                         let response = ui.add(editor);
+                        ui.add_space(EDITOR_BOTTOM_PADDING);
                         if !self.selected_note_deleted && response.changed() {
                             if let Some(id) = self.selected_note_id.clone() {
                                 let body = self.editor_body.clone();
@@ -235,6 +238,7 @@ impl MemoGuiApp {
                             editor = editor.interactive(false);
                         }
                         let response = ui.add(editor);
+                        ui.add_space(EDITOR_BOTTOM_PADDING);
                         if !self.selected_note_deleted && response.changed() {
                             if let Some(id) = self.selected_note_id.clone() {
                                 let body = self.editor_body.clone();
