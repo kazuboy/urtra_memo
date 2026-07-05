@@ -44,6 +44,7 @@
 上部ツールバーの `ショートカット` から一覧を確認できます。
 
 - `Ctrl/Cmd+S`: 今すぐ保存
+- `Ctrl/Cmd+Z`: 直前のメモ操作を元に戻す
 - `Ctrl/Cmd+Alt+N`: 新規メモ
 - `Ctrl/Cmd+F`: 検索欄へフォーカス
 - `Ctrl/Cmd+M`: Markdownプレビュー切替
@@ -52,6 +53,7 @@
 - `Ctrl/Cmd+↑ / Ctrl/Cmd+↓`: 前後のメモへ移動
 - `Ctrl/Cmd+- / Ctrl/Cmd+0 / Ctrl/Cmd++`: UIサイズの縮小 / 標準 / 拡大
 - `Ctrl/Cmd+,`: メニューを開く
+- `Ctrl/Cmd+/`: ショートカット一覧を開く
 - `Delete`: エディタ入力中でない時に選択メモをゴミ箱へ移動
 
 ## 5. フォルダ

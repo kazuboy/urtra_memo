@@ -31,6 +31,7 @@ const LIST_PANEL_MAX_WIDTH: f32 = 520.0;
 const UI_ZOOM_MIN: f32 = 0.85;
 const UI_ZOOM_MAX: f32 = 1.35;
 const UI_ZOOM_STEP: f32 = 0.05;
+const UNDO_STACK_LIMIT: usize = 20;
 const DEFAULT_TEXT_COLOR_RGB: [u8; 3] = [28, 28, 30];
 const DEFAULT_BG_COLOR_RGB: [u8; 3] = [245, 245, 247];
 const DEFAULT_ACCENT_COLOR_RGB: [u8; 3] = [138, 136, 228];
@@ -40,6 +41,7 @@ const FONT_PRESET_MONO: &str = "mono";
 const WEB_CJK_FONT_ID: &str = "web_cjk_mplus";
 const CLIP_HISTORY_NOTE_ID: &str = "__web_clip_history__";
 const SEARCH_FIELD_ID: &str = "web_search_field";
+const EDITOR_FIELD_ID: &str = "web_note_editor";
 const CLIP_HISTORY_MAX_ITEMS: usize = 400;
 const CLIP_ITEM_MAX_CHARS: usize = 8000;
 const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
@@ -177,6 +179,8 @@ export function um_install_shortcut_guard() {
       (cmd && key === "s") ||
       (cmd && key === "f") ||
       (cmd && key === "m") ||
+      (cmd && key === "z") ||
+      (cmd && key === "/") ||
       (cmd && event.shiftKey && key === "f") ||
       (cmd && event.altKey && key === "n") ||
       (cmd && ["+", "=", "-", "0", "arrowup", "arrowdown", ","].includes(key)) ||
@@ -424,6 +428,18 @@ struct WebMemoApp {
     show_folder_delete_confirm: bool,
     folder_delete_target_id: Option<String>,
     folder_delete_target_name: String,
+    undo_stack: Vec<WebUndoSnapshot>,
+    window_focused: bool,
+    focus_editor_on_return: bool,
+}
+
+#[derive(Clone)]
+struct WebUndoSnapshot {
+    state: WebState,
+    editor_title: String,
+    editor_body: String,
+    editor_tags: String,
+    dirty_since_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -511,13 +527,80 @@ impl WebMemoApp {
             show_folder_delete_confirm: false,
             folder_delete_target_id: None,
             folder_delete_target_name: String::new(),
+            undo_stack: Vec::new(),
+            window_focused: true,
+            focus_editor_on_return: false,
         };
         app.sync_selection_for_current_scope();
         app
     }
 
+    fn undo_snapshot(&self) -> WebUndoSnapshot {
+        WebUndoSnapshot {
+            state: self.state.clone(),
+            editor_title: self.editor_title.clone(),
+            editor_body: self.editor_body.clone(),
+            editor_tags: self.editor_tags.clone(),
+            dirty_since_ms: self.dirty_since_ms,
+        }
+    }
+
+    fn push_undo_snapshot(&mut self) {
+        self.undo_stack.push(self.undo_snapshot());
+        if self.undo_stack.len() > UNDO_STACK_LIMIT {
+            let overflow = self.undo_stack.len() - UNDO_STACK_LIMIT;
+            self.undo_stack.drain(0..overflow);
+        }
+    }
+
+    fn undo_last_action(&mut self) {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            self.status_line = self.tr("nothing to undo", "nothing to undo").to_string();
+            return;
+        };
+
+        self.state = snapshot.state;
+        self.editor_title = snapshot.editor_title;
+        self.editor_body = snapshot.editor_body;
+        self.editor_tags = snapshot.editor_tags;
+        self.dirty_since_ms = snapshot.dirty_since_ms;
+        ensure_state_integrity(&mut self.state);
+        save_state(&self.state);
+        self.status_line = self.tr("undone", "undone").to_string();
+    }
+
+    fn track_window_focus_return(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.focused || i.viewport().focused.unwrap_or(false));
+        if focused && !self.window_focused {
+            self.focus_editor_on_return = true;
+            ctx.request_repaint();
+        }
+        self.window_focused = focused;
+    }
+
+    fn has_blocking_overlay(&self) -> bool {
+        self.show_menu
+            || self.show_shortcuts
+            || self.show_folder_manager
+            || self.show_note_settings
+            || self.show_folder_delete_confirm
+    }
+
+    fn restore_editor_focus_after_return(&mut self, ctx: &egui::Context) {
+        if !self.focus_editor_on_return {
+            return;
+        }
+        self.focus_editor_on_return = false;
+        let search_id = egui::Id::new(SEARCH_FIELD_ID);
+        if ctx.memory(|mem| mem.focused() == Some(search_id)) {
+            return;
+        }
+        ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(EDITOR_FIELD_ID)));
+    }
+
     fn create_note(&mut self) {
         self.flush_editor_now();
+        self.push_undo_snapshot();
         self.state.show_recent = false;
         self.state.show_trash = false;
         let note = make_empty_note_in_folder(&self.state.selected_folder_id);
@@ -541,6 +624,7 @@ impl WebMemoApp {
         if self.state.notes[index].deleted {
             return;
         }
+        self.push_undo_snapshot();
         self.state.notes[index].deleted = true;
         self.state.notes[index].updated_at_ms = now_millis();
         sort_notes_by_updated_desc(&mut self.state.notes);
@@ -560,6 +644,7 @@ impl WebMemoApp {
         if !self.state.notes[index].deleted {
             return;
         }
+        self.push_undo_snapshot();
         self.state.notes[index].deleted = false;
         self.state.notes[index].updated_at_ms = now_millis();
         sort_notes_by_updated_desc(&mut self.state.notes);
@@ -576,6 +661,7 @@ impl WebMemoApp {
         if !self.selected_note_is_deleted() {
             return;
         }
+        self.push_undo_snapshot();
         let before = self.state.notes.len();
         self.state.notes.retain(|note| note.id != id);
         self.state.recent_note_ids.retain(|note_id| note_id != &id);
@@ -597,6 +683,9 @@ impl WebMemoApp {
             .filter(|note| note.deleted)
             .map(|note| note.id.clone())
             .collect();
+        if !deleted_ids.is_empty() {
+            self.push_undo_snapshot();
+        }
         self.state.notes.retain(|note| !note.deleted);
         if !deleted_ids.is_empty() {
             self.state
@@ -686,6 +775,7 @@ impl WebMemoApp {
             self.show_note_settings = false;
             return;
         }
+        self.push_undo_snapshot();
         self.state.notes[note_index].title = new_title;
         self.state.notes[note_index].tags = new_tags;
         self.state.notes[note_index].updated_at_ms = now_millis();
@@ -877,6 +967,7 @@ impl WebMemoApp {
         let keyboard_captured = ctx.wants_keyboard_input();
         let (
             save_shortcut,
+            undo_shortcut,
             new_note_shortcut,
             focus_search_shortcut,
             markdown_shortcut,
@@ -891,6 +982,7 @@ impl WebMemoApp {
             list_down_shortcut,
             delete_shortcut,
             menu_shortcut,
+            shortcuts_shortcut,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             let alt_only =
@@ -901,6 +993,7 @@ impl WebMemoApp {
                     && !i.modifiers.shift;
             (
                 cmd && i.key_pressed(egui::Key::S),
+                cmd && !i.modifiers.shift && !keyboard_captured && i.key_pressed(egui::Key::Z),
                 cmd && i.modifiers.alt && !i.modifiers.shift && i.key_pressed(egui::Key::N),
                 cmd && i.key_pressed(egui::Key::F),
                 cmd && i.key_pressed(egui::Key::M),
@@ -915,11 +1008,15 @@ impl WebMemoApp {
                 cmd && i.key_pressed(egui::Key::ArrowDown),
                 !keyboard_captured && i.modifiers.is_none() && i.key_pressed(egui::Key::Delete),
                 cmd && i.key_pressed(egui::Key::Comma),
+                cmd && i.key_pressed(egui::Key::Slash),
             )
         });
 
         if save_shortcut {
             self.flush_editor_now();
+        }
+        if undo_shortcut {
+            self.undo_last_action();
         }
         if new_note_shortcut {
             self.create_note();
@@ -973,6 +1070,9 @@ impl WebMemoApp {
         }
         if menu_shortcut {
             self.show_menu = true;
+        }
+        if shortcuts_shortcut {
+            self.show_shortcuts = true;
         }
     }
 
@@ -1036,6 +1136,8 @@ impl WebMemoApp {
             name: name.to_string(),
             created_at_ms: now_millis(),
         };
+        self.flush_editor_now();
+        self.push_undo_snapshot();
         self.state.folders.push(folder.clone());
         self.new_folder_name.clear();
         self.set_active_folder(folder.id);
@@ -1069,6 +1171,7 @@ impl WebMemoApp {
             self.folder_delete_target_name.clear();
             return;
         }
+        self.push_undo_snapshot();
         let mut moved = 0usize;
         let now = now_millis();
         for note in &mut self.state.notes {
@@ -1190,6 +1293,9 @@ impl WebMemoApp {
     }
 
     fn clear_clipboard_history(&mut self) {
+        if !self.state.clipboard_history.is_empty() {
+            self.push_undo_snapshot();
+        }
         self.state.clipboard_history.clear();
         self.editor_body.clear();
         save_state(&self.state);
@@ -1237,6 +1343,7 @@ impl WebMemoApp {
         };
         let mut created = 0usize;
         let mut updated = 0usize;
+        self.push_undo_snapshot();
         for folder in bundle.folders {
             if folder.id.trim().is_empty() || folder.name.trim().is_empty() {
                 continue;
@@ -1276,6 +1383,7 @@ impl WebMemoApp {
     }
 
     fn import_as_single_note(&mut self, file_name: &str, content: &str) {
+        self.push_undo_snapshot();
         let now = now_millis();
         let id = format!("n{now}-{}", NOTE_SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let body = content.replace("\r\n", "\n");
@@ -1544,6 +1652,7 @@ impl WebMemoApp {
 
 impl eframe::App for WebMemoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.track_window_focus_return(ctx);
         if !self.boot_status_cleared {
             set_boot_status("");
             self.boot_status_cleared = true;
@@ -1615,6 +1724,14 @@ impl eframe::App for WebMemoApp {
                 if ui.button(self.tr("+ New", "+ 新規")).clicked() {
                     self.create_note();
                 }
+                let undo_enabled = !self.undo_stack.is_empty();
+                if ui
+                    .add_enabled(undo_enabled, egui::Button::new(self.tr("Undo", "Undo")))
+                    .on_hover_text("Ctrl/Cmd+Z")
+                    .clicked()
+                {
+                    self.undo_last_action();
+                }
                 ui.toggle_value(&mut self.state.markdown_render_mode, "M");
                 let focus_label = self.tr("Focus", "集中");
                 ui.toggle_value(&mut self.state.focus_mode, focus_label);
@@ -1662,6 +1779,7 @@ impl eframe::App for WebMemoApp {
                     }
                     if !selected_is_deleted && move_target_folder != current_folder_id {
                         let moved_folder_name = self.folder_name_by_id(&move_target_folder);
+                        self.push_undo_snapshot();
                         if let Some(note) = self.state.notes.iter_mut().find(|n| n.id == selected_id)
                         {
                             note.folder_id = move_target_folder.clone();
@@ -1966,6 +2084,7 @@ impl eframe::App for WebMemoApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(selected_id) = self.state.selected_note_id.clone() else {
+                self.focus_editor_on_return = false;
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     if self.state.show_trash {
@@ -1992,6 +2111,7 @@ impl eframe::App for WebMemoApp {
             };
 
             if selected_id == CLIP_HISTORY_NOTE_ID {
+                self.focus_editor_on_return = false;
                 ui.horizontal(|ui| {
                     ui.label(self.tr("Clipboard History", "クリップ履歴"));
                     if ui.button(self.tr("Clear", "クリア")).clicked() {
@@ -2033,6 +2153,9 @@ impl eframe::App for WebMemoApp {
                 return;
             };
             let selected_is_deleted = selected_note.deleted;
+            if selected_is_deleted || self.has_blocking_overlay() {
+                self.focus_editor_on_return = false;
+            }
             if selected_is_deleted {
                 ui.horizontal(|ui| {
                     ui.small(self.tr("(in trash)", "(ゴミ箱内)"));
@@ -2069,6 +2192,7 @@ impl eframe::App for WebMemoApp {
                         let desired_rows = self.editor_body.lines().count().max(12);
                         let response = ui.add(
                             egui::TextEdit::multiline(&mut self.editor_body)
+                                .id(egui::Id::new(EDITOR_FIELD_ID))
                                 .hint_text(editor_hint)
                                 .desired_rows(desired_rows)
                                 .desired_width(f32::INFINITY),
@@ -2079,6 +2203,9 @@ impl eframe::App for WebMemoApp {
             });
             if edit_output.inner.inner.changed() {
                 self.mark_dirty();
+            }
+            if !selected_is_deleted {
+                self.restore_editor_focus_after_return(ctx);
             }
             if !selected_is_deleted
                 && edit_output.inner.inner.dragged()
@@ -2513,6 +2640,7 @@ fn draw_shortcuts_grid(app: &WebMemoApp, ui: &mut egui::Ui) {
         .spacing([18.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
+            shortcut_row(ui, app.tr("Undo last action", "Undo last action"), "Ctrl/Cmd+Z");
             shortcut_row(ui, app.tr("Save now", "今すぐ保存"), "Ctrl/Cmd+S");
             shortcut_row(ui, app.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
             shortcut_row(ui, app.tr("Focus search", "検索へフォーカス"), "Ctrl/Cmd+F");
@@ -2547,6 +2675,7 @@ fn draw_shortcuts_grid(app: &WebMemoApp, ui: &mut egui::Ui) {
                 app.tr("Move selected note to Trash", "選択メモをゴミ箱へ"),
                 "Delete",
             );
+            shortcut_row(ui, app.tr("Open shortcuts", "Open shortcuts"), "Ctrl/Cmd+/");
         });
 }
 
