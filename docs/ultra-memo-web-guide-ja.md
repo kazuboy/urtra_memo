@@ -45,8 +45,10 @@
 
 - `Ctrl/Cmd+S`: 今すぐ保存
 - `Ctrl/Cmd+Z`: 直前のメモ操作を元に戻す
+- `Ctrl/Cmd+Y` / `Ctrl/Cmd+Shift+Z`: 元に戻したメモ操作をやり直す
 - `Ctrl/Cmd+Alt+N`: 新規メモ
-- `Ctrl/Cmd+F`: 検索欄へフォーカス
+- `Ctrl/Cmd+F`: 本文検索を開く
+- `Ctrl/Cmd+H`: 本文検索/置換を開く
 - `Ctrl/Cmd+M`: Markdownプレビュー切替
 - `Ctrl/Cmd+Shift+F`: 集中モード切替
 - `Alt+1 / Alt+2 / Alt+3`: すべて / 最近 / ゴミ箱 の切替

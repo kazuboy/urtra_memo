@@ -42,6 +42,8 @@ const WEB_CJK_FONT_ID: &str = "web_cjk_mplus";
 const CLIP_HISTORY_NOTE_ID: &str = "__web_clip_history__";
 const SEARCH_FIELD_ID: &str = "web_search_field";
 const EDITOR_FIELD_ID: &str = "web_note_editor";
+const FIND_FIELD_ID: &str = "web_find_field";
+const REPLACE_FIELD_ID: &str = "web_replace_field";
 const CLIP_HISTORY_MAX_ITEMS: usize = 400;
 const CLIP_ITEM_MAX_CHARS: usize = 8000;
 const TEXT_COLOR_PRESETS: [(&str, [u8; 3]); 5] = [
@@ -178,8 +180,10 @@ export function um_install_shortcut_guard() {
     const guarded =
       (cmd && key === "s") ||
       (cmd && key === "f") ||
+      (cmd && key === "h") ||
       (cmd && key === "m") ||
       (cmd && key === "z") ||
+      (cmd && key === "y") ||
       (cmd && key === "/") ||
       (cmd && event.shiftKey && key === "f") ||
       (cmd && event.altKey && key === "n") ||
@@ -429,8 +433,15 @@ struct WebMemoApp {
     folder_delete_target_id: Option<String>,
     folder_delete_target_name: String,
     undo_stack: Vec<WebUndoSnapshot>,
+    redo_stack: Vec<WebUndoSnapshot>,
     window_focused: bool,
     focus_editor_on_return: bool,
+    show_find_replace: bool,
+    find_query: String,
+    replace_query: String,
+    find_active_match: Option<(usize, usize)>,
+    focus_find_requested: bool,
+    focus_replace_requested: bool,
 }
 
 #[derive(Clone)]
@@ -528,8 +539,15 @@ impl WebMemoApp {
             folder_delete_target_id: None,
             folder_delete_target_name: String::new(),
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             window_focused: true,
             focus_editor_on_return: false,
+            show_find_replace: false,
+            find_query: String::new(),
+            replace_query: String::new(),
+            find_active_match: None,
+            focus_find_requested: false,
+            focus_replace_requested: false,
         };
         app.sync_selection_for_current_scope();
         app
@@ -546,11 +564,28 @@ impl WebMemoApp {
     }
 
     fn push_undo_snapshot(&mut self) {
-        self.undo_stack.push(self.undo_snapshot());
-        if self.undo_stack.len() > UNDO_STACK_LIMIT {
-            let overflow = self.undo_stack.len() - UNDO_STACK_LIMIT;
-            self.undo_stack.drain(0..overflow);
+        let snapshot = self.undo_snapshot();
+        Self::push_limited_snapshot(&mut self.undo_stack, snapshot);
+        self.redo_stack.clear();
+    }
+
+    fn push_limited_snapshot(stack: &mut Vec<WebUndoSnapshot>, snapshot: WebUndoSnapshot) {
+        stack.push(snapshot);
+        if stack.len() > UNDO_STACK_LIMIT {
+            let overflow = stack.len() - UNDO_STACK_LIMIT;
+            stack.drain(0..overflow);
         }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: WebUndoSnapshot) {
+        self.state = snapshot.state;
+        self.editor_title = snapshot.editor_title;
+        self.editor_body = snapshot.editor_body;
+        self.editor_tags = snapshot.editor_tags;
+        self.dirty_since_ms = snapshot.dirty_since_ms;
+        self.find_active_match = None;
+        ensure_state_integrity(&mut self.state);
+        save_state(&self.state);
     }
 
     fn undo_last_action(&mut self) {
@@ -559,14 +594,22 @@ impl WebMemoApp {
             return;
         };
 
-        self.state = snapshot.state;
-        self.editor_title = snapshot.editor_title;
-        self.editor_body = snapshot.editor_body;
-        self.editor_tags = snapshot.editor_tags;
-        self.dirty_since_ms = snapshot.dirty_since_ms;
-        ensure_state_integrity(&mut self.state);
-        save_state(&self.state);
+        let redo_snapshot = self.undo_snapshot();
+        Self::push_limited_snapshot(&mut self.redo_stack, redo_snapshot);
+        self.restore_snapshot(snapshot);
         self.status_line = self.tr("undone", "undone").to_string();
+    }
+
+    fn redo_last_action(&mut self) {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            self.status_line = self.tr("nothing to redo", "nothing to redo").to_string();
+            return;
+        };
+
+        let undo_snapshot = self.undo_snapshot();
+        Self::push_limited_snapshot(&mut self.undo_stack, undo_snapshot);
+        self.restore_snapshot(snapshot);
+        self.status_line = self.tr("redone", "redone").to_string();
     }
 
     fn track_window_focus_return(&mut self, ctx: &egui::Context) {
@@ -596,6 +639,247 @@ impl WebMemoApp {
             return;
         }
         ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(EDITOR_FIELD_ID)));
+    }
+
+    fn selected_note_can_search_body(&self) -> bool {
+        self.state.selected_note_id.is_some()
+            && self.state.selected_note_id.as_deref() != Some(CLIP_HISTORY_NOTE_ID)
+    }
+
+    fn selected_note_can_edit_body(&self) -> bool {
+        self.selected_note_can_search_body() && !self.selected_note_is_deleted()
+    }
+
+    fn open_find_replace(&mut self, focus_replace: bool) {
+        if !self.selected_note_can_search_body() {
+            self.status_line = self.tr("no editable note selected", "no editable note selected").to_string();
+            return;
+        }
+        self.show_find_replace = true;
+        if focus_replace {
+            self.focus_replace_requested = true;
+        } else {
+            self.focus_find_requested = true;
+        }
+    }
+
+    fn close_find_replace(&mut self) {
+        self.show_find_replace = false;
+        self.find_active_match = None;
+        self.focus_find_requested = false;
+        self.focus_replace_requested = false;
+    }
+
+    fn select_editor_byte_range(&mut self, ctx: &egui::Context, start: usize, end: usize) {
+        let editor_id = egui::Id::new(EDITOR_FIELD_ID);
+        let mut state = egui::TextEdit::load_state(ctx, editor_id).unwrap_or_default();
+        let start_char = byte_to_char_index(&self.editor_body, start);
+        let end_char = byte_to_char_index(&self.editor_body, end);
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(start_char),
+            egui::text::CCursor::new(end_char),
+        )));
+        egui::TextEdit::store_state(ctx, editor_id, state);
+        ctx.memory_mut(|mem| mem.request_focus(editor_id));
+    }
+
+    fn find_matches(&self) -> Vec<(usize, usize)> {
+        find_byte_ranges(&self.editor_body, &self.find_query)
+    }
+
+    fn find_next_match(&mut self, ctx: &egui::Context, backwards: bool) {
+        if self.find_query.is_empty() {
+            self.status_line = self.tr("find text is empty", "find text is empty").to_string();
+            return;
+        }
+        let matches = self.find_matches();
+        if matches.is_empty() {
+            self.find_active_match = None;
+            self.status_line = self.tr("no matches", "no matches").to_string();
+            return;
+        }
+
+        let current_start = self.find_active_match.map(|range| range.0);
+        let index = if backwards {
+            current_start
+                .and_then(|start| matches.iter().rposition(|range| range.0 < start))
+                .unwrap_or(matches.len() - 1)
+        } else {
+            current_start
+                .and_then(|start| matches.iter().position(|range| range.0 > start))
+                .unwrap_or(0)
+        };
+        let selected = matches[index];
+        self.find_active_match = Some(selected);
+        self.select_editor_byte_range(ctx, selected.0, selected.1);
+        self.status_line = format!("match {} / {}", index + 1, matches.len());
+    }
+
+    fn replace_current_match(&mut self, ctx: &egui::Context) {
+        if !self.selected_note_can_edit_body() {
+            return;
+        }
+        if self.find_query.is_empty() {
+            self.status_line = self.tr("find text is empty", "find text is empty").to_string();
+            return;
+        }
+        let active = self.find_active_match.and_then(|(start, end)| {
+            self.editor_body
+                .get(start..end)
+                .filter(|text| *text == self.find_query)
+                .map(|_| (start, end))
+        });
+        let (start, end) = if let Some(range) = active {
+            range
+        } else {
+            self.find_next_match(ctx, false);
+            let Some(range) = self.find_active_match else {
+                return;
+            };
+            range
+        };
+
+        self.push_undo_snapshot();
+        self.editor_body
+            .replace_range(start..end, &self.replace_query);
+        let replacement_end = start + self.replace_query.len();
+        self.find_active_match = None;
+        self.select_editor_byte_range(ctx, start, replacement_end);
+        self.mark_dirty();
+        self.status_line = self.tr("replaced", "replaced").to_string();
+    }
+
+    fn replace_all_matches(&mut self) {
+        if !self.selected_note_can_edit_body() {
+            return;
+        }
+        if self.find_query.is_empty() {
+            self.status_line = self.tr("find text is empty", "find text is empty").to_string();
+            return;
+        }
+        let count = self.find_matches().len();
+        if count == 0 {
+            self.status_line = self.tr("no matches", "no matches").to_string();
+            return;
+        }
+
+        self.push_undo_snapshot();
+        self.editor_body = self.editor_body.replace(&self.find_query, &self.replace_query);
+        self.find_active_match = None;
+        self.mark_dirty();
+        self.status_line = format!("replaced {count} matches");
+    }
+
+    fn draw_find_replace_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        selected_is_deleted: bool,
+    ) {
+        if !self.show_find_replace {
+            return;
+        }
+
+        let can_edit = !selected_is_deleted && self.selected_note_can_edit_body();
+        let matches = self.find_matches();
+        let match_text = if self.find_query.is_empty() {
+            "-".to_string()
+        } else {
+            matches.len().to_string()
+        };
+        let find_hint = self.tr("Find", "検索");
+        let replace_hint = self.tr("Replace", "置換");
+
+        ui.horizontal_wrapped(|ui| {
+            let find_response = ui.add_sized(
+                [180.0, 28.0],
+                egui::TextEdit::singleline(&mut self.find_query)
+                    .id(egui::Id::new(FIND_FIELD_ID))
+                    .hint_text(find_hint),
+            );
+            if find_response.changed() {
+                self.find_active_match = None;
+            }
+            if self.focus_find_requested {
+                self.focus_find_requested = false;
+                find_response.request_focus();
+            }
+
+            if ui.button("↑").on_hover_text(self.tr("Previous match", "前へ")).clicked() {
+                self.find_next_match(ctx, true);
+            }
+            if ui.button("↓").on_hover_text(self.tr("Next match", "次へ")).clicked() {
+                self.find_next_match(ctx, false);
+            }
+            ui.label(match_text);
+
+            let replace_response = ui.add_enabled_ui(can_edit, |ui| {
+                ui.add_sized(
+                    [180.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.replace_query)
+                        .id(egui::Id::new(REPLACE_FIELD_ID))
+                        .hint_text(replace_hint),
+                )
+            });
+            if self.focus_replace_requested {
+                self.focus_replace_requested = false;
+                replace_response.inner.request_focus();
+            }
+
+            if ui
+                .add_enabled(can_edit, egui::Button::new(self.tr("Replace", "置換")))
+                .clicked()
+            {
+                self.replace_current_match(ctx);
+            }
+            if ui
+                .add_enabled(can_edit, egui::Button::new(self.tr("All", "すべて")))
+                .clicked()
+            {
+                self.replace_all_matches();
+            }
+            if ui.button("×").on_hover_text(self.tr("Close", "閉じる")).clicked() {
+                self.close_find_replace();
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    fn draw_status_tools(&mut self, ui: &mut egui::Ui) {
+        let can_search = self.selected_note_can_search_body();
+        let can_replace = self.selected_note_can_edit_body();
+        let undo_enabled = !self.undo_stack.is_empty();
+        let redo_enabled = !self.redo_stack.is_empty();
+
+        if ui
+            .add_enabled(can_replace, egui::Button::new("⇄"))
+            .on_hover_text(self.tr("Find / Replace (Ctrl/Cmd+H)", "検索/置換 (Ctrl/Cmd+H)"))
+            .clicked()
+        {
+            self.open_find_replace(true);
+        }
+        if ui
+            .add_enabled(can_search, egui::Button::new("⌕"))
+            .on_hover_text(self.tr("Find in note (Ctrl/Cmd+F)", "本文検索 (Ctrl/Cmd+F)"))
+            .clicked()
+        {
+            self.open_find_replace(false);
+            self.status_line = self.tr("find opened", "本文検索を開きました").to_string();
+        }
+        if ui
+            .add_enabled(redo_enabled, egui::Button::new("↷"))
+            .on_hover_text(self.tr("Redo (Ctrl/Cmd+Y)", "進む (Ctrl/Cmd+Y)"))
+            .clicked()
+        {
+            self.redo_last_action();
+        }
+        if ui
+            .add_enabled(undo_enabled, egui::Button::new("↶"))
+            .on_hover_text(self.tr("Undo (Ctrl/Cmd+Z)", "戻す (Ctrl/Cmd+Z)"))
+            .clicked()
+        {
+            self.undo_last_action();
+        }
     }
 
     fn create_note(&mut self) {
@@ -968,8 +1252,10 @@ impl WebMemoApp {
         let (
             save_shortcut,
             undo_shortcut,
+            redo_shortcut,
             new_note_shortcut,
-            focus_search_shortcut,
+            find_shortcut,
+            replace_shortcut,
             markdown_shortcut,
             focus_mode_shortcut,
             tab_all_shortcut,
@@ -983,6 +1269,7 @@ impl WebMemoApp {
             delete_shortcut,
             menu_shortcut,
             shortcuts_shortcut,
+            close_find_shortcut,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             let alt_only =
@@ -994,8 +1281,12 @@ impl WebMemoApp {
             (
                 cmd && i.key_pressed(egui::Key::S),
                 cmd && !i.modifiers.shift && !keyboard_captured && i.key_pressed(egui::Key::Z),
+                !keyboard_captured
+                    && ((cmd && i.key_pressed(egui::Key::Y))
+                        || (cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z))),
                 cmd && i.modifiers.alt && !i.modifiers.shift && i.key_pressed(egui::Key::N),
                 cmd && i.key_pressed(egui::Key::F),
+                cmd && i.key_pressed(egui::Key::H),
                 cmd && i.key_pressed(egui::Key::M),
                 cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
                 alt_only && i.key_pressed(egui::Key::Num1),
@@ -1009,6 +1300,7 @@ impl WebMemoApp {
                 !keyboard_captured && i.modifiers.is_none() && i.key_pressed(egui::Key::Delete),
                 cmd && i.key_pressed(egui::Key::Comma),
                 cmd && i.key_pressed(egui::Key::Slash),
+                self.show_find_replace && i.key_pressed(egui::Key::Escape),
             )
         });
 
@@ -1018,13 +1310,20 @@ impl WebMemoApp {
         if undo_shortcut {
             self.undo_last_action();
         }
+        if redo_shortcut {
+            self.redo_last_action();
+        }
         if new_note_shortcut {
             self.create_note();
         }
-        if focus_search_shortcut {
+        if find_shortcut {
             self.state.focus_mode = false;
-            ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(SEARCH_FIELD_ID)));
-            self.status_line = self.tr("search focused", "検索へフォーカス").to_string();
+            self.open_find_replace(false);
+            self.status_line = self.tr("find opened", "本文検索を開きました").to_string();
+        }
+        if replace_shortcut {
+            self.state.focus_mode = false;
+            self.open_find_replace(true);
         }
         if markdown_shortcut {
             self.state.markdown_render_mode = !self.state.markdown_render_mode;
@@ -1073,6 +1372,9 @@ impl WebMemoApp {
         }
         if shortcuts_shortcut {
             self.show_shortcuts = true;
+        }
+        if close_find_shortcut {
+            self.close_find_replace();
         }
     }
 
@@ -2162,6 +2464,7 @@ impl eframe::App for WebMemoApp {
                 });
             }
 
+            self.draw_find_replace_panel(ui, ctx, selected_is_deleted);
             ui.add_space(6.0);
             let total_available = ui.available_size();
             let preview_height = if self.state.markdown_render_mode {
@@ -2202,6 +2505,7 @@ impl eframe::App for WebMemoApp {
                     })
             });
             if edit_output.inner.inner.changed() {
+                self.find_active_match = None;
                 self.mark_dirty();
             }
             if !selected_is_deleted {
@@ -2253,13 +2557,16 @@ impl eframe::App for WebMemoApp {
         egui::TopBottomPanel::bottom("status_bar")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     ui.label(&self.status_line);
                     ui.separator();
                     ui.label(self.tr(
                         "Storage: browser localStorage",
                         "保存先: ブラウザ localStorage",
                     ));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.draw_status_tools(ui);
+                    });
                 });
             });
 
@@ -2641,9 +2948,15 @@ fn draw_shortcuts_grid(app: &WebMemoApp, ui: &mut egui::Ui) {
         .striped(true)
         .show(ui, |ui| {
             shortcut_row(ui, app.tr("Undo last action", "Undo last action"), "Ctrl/Cmd+Z");
+            shortcut_row(
+                ui,
+                app.tr("Redo last action", "Redo last action"),
+                "Ctrl/Cmd+Y / Ctrl/Cmd+Shift+Z",
+            );
             shortcut_row(ui, app.tr("Save now", "今すぐ保存"), "Ctrl/Cmd+S");
             shortcut_row(ui, app.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
-            shortcut_row(ui, app.tr("Focus search", "検索へフォーカス"), "Ctrl/Cmd+F");
+            shortcut_row(ui, app.tr("Find in note", "本文検索"), "Ctrl/Cmd+F");
+            shortcut_row(ui, app.tr("Find / Replace", "検索/置換"), "Ctrl/Cmd+H");
             shortcut_row(
                 ui,
                 app.tr("Toggle Markdown preview", "Markdown プレビュー切替"),
@@ -2683,6 +2996,28 @@ fn shortcut_row(ui: &mut egui::Ui, action: &str, keys: &str) {
     ui.label(action);
     ui.monospace(keys);
     ui.end_row();
+}
+
+fn find_byte_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative_start) = text[offset..].find(query) {
+        let start = offset + relative_start;
+        let end = start + query.len();
+        ranges.push((start, end));
+        offset = end;
+        if offset >= text.len() {
+            break;
+        }
+    }
+    ranges
+}
+
+fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
+    text[..byte_index].chars().count()
 }
 
 fn normalize_tags(raw: &str) -> Vec<String> {
