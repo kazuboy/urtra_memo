@@ -850,32 +850,40 @@ impl WebMemoApp {
         let can_replace = self.selected_note_can_edit_body();
         let undo_enabled = !self.undo_stack.is_empty();
         let redo_enabled = !self.redo_stack.is_empty();
+        let replace_tip = self.tr("Find / Replace (Ctrl/Cmd+H)", "検索/置換 (Ctrl/Cmd+H)");
+        let find_tip = self.tr("Find in note (Ctrl/Cmd+F)", "本文検索 (Ctrl/Cmd+F)");
+        let redo_tip = self.tr("Redo (Ctrl/Cmd+Y)", "進む (Ctrl/Cmd+Y)");
+        let undo_tip = self.tr("Undo (Ctrl/Cmd+Z)", "戻る (Ctrl/Cmd+Z)");
 
         if ui
-            .add_enabled(can_replace, egui::Button::new("⇄"))
-            .on_hover_text(self.tr("Find / Replace (Ctrl/Cmd+H)", "検索/置換 (Ctrl/Cmd+H)"))
+            .add_enabled(can_replace, egui::Button::new("置換"))
+            .on_hover_text(replace_tip)
+            .on_disabled_hover_text(replace_tip)
             .clicked()
         {
             self.open_find_replace(true);
         }
         if ui
-            .add_enabled(can_search, egui::Button::new("⌕"))
-            .on_hover_text(self.tr("Find in note (Ctrl/Cmd+F)", "本文検索 (Ctrl/Cmd+F)"))
+            .add_enabled(can_search, egui::Button::new("検索"))
+            .on_hover_text(find_tip)
+            .on_disabled_hover_text(find_tip)
             .clicked()
         {
             self.open_find_replace(false);
             self.status_line = self.tr("find opened", "本文検索を開きました").to_string();
         }
         if ui
-            .add_enabled(redo_enabled, egui::Button::new("↷"))
-            .on_hover_text(self.tr("Redo (Ctrl/Cmd+Y)", "進む (Ctrl/Cmd+Y)"))
+            .add_enabled(redo_enabled, egui::Button::new("進む ->"))
+            .on_hover_text(redo_tip)
+            .on_disabled_hover_text(redo_tip)
             .clicked()
         {
             self.redo_last_action();
         }
         if ui
-            .add_enabled(undo_enabled, egui::Button::new("↶"))
-            .on_hover_text(self.tr("Undo (Ctrl/Cmd+Z)", "戻す (Ctrl/Cmd+Z)"))
+            .add_enabled(undo_enabled, egui::Button::new("<- 戻る"))
+            .on_hover_text(undo_tip)
+            .on_disabled_hover_text(undo_tip)
             .clicked()
         {
             self.undo_last_action();
@@ -2028,8 +2036,9 @@ impl eframe::App for WebMemoApp {
                 }
                 let undo_enabled = !self.undo_stack.is_empty();
                 if ui
-                    .add_enabled(undo_enabled, egui::Button::new(self.tr("Undo", "Undo")))
-                    .on_hover_text("Ctrl/Cmd+Z")
+                    .add_enabled(undo_enabled, egui::Button::new(self.tr("<- Undo", "<- 戻る")))
+                    .on_hover_text(self.tr("Undo (Ctrl/Cmd+Z)", "戻る (Ctrl/Cmd+Z)"))
+                    .on_disabled_hover_text(self.tr("Undo (Ctrl/Cmd+Z)", "戻る (Ctrl/Cmd+Z)"))
                     .clicked()
                 {
                     self.undo_last_action();
