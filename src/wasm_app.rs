@@ -565,6 +565,10 @@ impl WebMemoApp {
 
     fn push_undo_snapshot(&mut self) {
         let snapshot = self.undo_snapshot();
+        self.push_undo_snapshot_value(snapshot);
+    }
+
+    fn push_undo_snapshot_value(&mut self, snapshot: WebUndoSnapshot) {
         Self::push_limited_snapshot(&mut self.undo_stack, snapshot);
         self.redo_stack.clear();
     }
@@ -2487,6 +2491,11 @@ impl eframe::App for WebMemoApp {
                 total_available.y.max(220.0)
             };
             let editor_hint = self.tr("Write your memo...", "メモを書いてください...");
+            let edit_undo_snapshot = if !selected_is_deleted && self.dirty_since_ms.is_none() {
+                Some(self.undo_snapshot())
+            } else {
+                None
+            };
             let edit_output = ui.add_enabled_ui(!selected_is_deleted, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("note_editor_scroll")
@@ -2514,6 +2523,9 @@ impl eframe::App for WebMemoApp {
                     })
             });
             if edit_output.inner.inner.changed() {
+                if let Some(snapshot) = edit_undo_snapshot {
+                    self.push_undo_snapshot_value(snapshot);
+                }
                 self.find_active_match = None;
                 self.mark_dirty();
             }
