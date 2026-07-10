@@ -1213,7 +1213,8 @@ impl WebMemoApp {
             return false;
         }
         if self.state.show_recent {
-            return self.state.recent_note_ids.iter().any(|id| id == &note.id);
+            return note.folder_id == self.state.selected_folder_id
+                && self.state.recent_note_ids.iter().any(|id| id == &note.id);
         }
         note.folder_id == self.state.selected_folder_id
     }
@@ -1537,9 +1538,11 @@ impl WebMemoApp {
             .map(|note| note.id.clone());
 
         if let Some(note) = selected_note(&self.state) {
+            self.editor_title = note.title.clone();
             self.editor_body = note.body.clone();
             self.editor_tags = note.tags.join(" ");
         } else {
+            self.editor_title.clear();
             self.editor_body.clear();
             self.editor_tags.clear();
         }
@@ -2137,7 +2140,11 @@ impl eframe::App for WebMemoApp {
                             self.state
                                 .notes
                                 .iter()
-                                .any(|note| &note.id == *id && !note.deleted)
+                                .any(|note| {
+                                    &note.id == *id
+                                        && !note.deleted
+                                        && note.folder_id == self.state.selected_folder_id
+                                })
                         })
                         .count();
                     let trash_count = self.state.notes.iter().filter(|note| note.deleted).count();
@@ -2223,7 +2230,7 @@ impl eframe::App for WebMemoApp {
                     });
 
                     ui.horizontal(|ui| {
-                        let can_use_folder = !self.state.show_trash && !self.state.show_recent;
+                        let can_use_folder = !self.state.show_trash;
                         let folder_name = if can_use_folder {
                             self.active_folder_name()
                         } else {
@@ -2233,7 +2240,7 @@ impl eframe::App for WebMemoApp {
                     });
 
                     ui.horizontal(|ui| {
-                        let can_use_folder = !self.state.show_trash && !self.state.show_recent;
+                        let can_use_folder = !self.state.show_trash;
                         ui.add_enabled_ui(can_use_folder, |ui| {
                             if ui
                                 .small_button(self.tr("Folders", "フォルダ一覧"))
