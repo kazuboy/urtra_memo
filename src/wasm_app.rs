@@ -2761,6 +2761,7 @@ impl eframe::App for WebMemoApp {
 
         if self.show_folder_manager {
             let mut open = self.show_folder_manager;
+            let mut close_after_folder_switch = false;
             egui::Window::new(self.tr("Folders", "フォルダ"))
                 .collapsible(false)
                 .resizable(false)
@@ -2793,7 +2794,10 @@ impl eframe::App for WebMemoApp {
                         }
                     }
                     if let Some(folder_id) = activate_folder {
-                        self.set_active_folder(folder_id);
+                        if self.state.selected_folder_id != folder_id {
+                            self.set_active_folder(folder_id);
+                            close_after_folder_switch = true;
+                        }
                     }
 
                     ui.separator();
@@ -2807,7 +2811,11 @@ impl eframe::App for WebMemoApp {
                         let submitted = input.lost_focus()
                             && ui.input(|input_state| input_state.key_pressed(egui::Key::Enter));
                         if ui.button(self.tr("Add", "追加")).clicked() || submitted {
+                            let previous_folder_id = self.state.selected_folder_id.clone();
                             self.add_folder();
+                            if self.state.selected_folder_id != previous_folder_id {
+                                close_after_folder_switch = true;
+                            }
                         }
                     });
                     ui.small(match self.state.ui_language {
@@ -2817,6 +2825,9 @@ impl eframe::App for WebMemoApp {
                         }
                     });
                 });
+            if close_after_folder_switch {
+                open = false;
+            }
             self.show_folder_manager = open;
         }
 
