@@ -49,6 +49,7 @@
 - `Ctrl/Cmd+Alt+N`: 新規メモ
 - `Ctrl/Cmd+F`: 本文検索を開く
 - `Ctrl/Cmd+H`: 本文検索/置換を開く
+- `Esc`: 本文検索/置換を閉じる。未保存の本文入力中は最後に保存された内容へ戻す
 - `Ctrl/Cmd+M`: Markdownプレビュー切替
 - `Ctrl/Cmd+Shift+F`: 集中モード切替
 - `Alt+1 / Alt+2 / Alt+3`: すべて / 最近 / ゴミ箱 の切替

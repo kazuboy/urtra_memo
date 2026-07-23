@@ -1147,6 +1147,37 @@ impl WebMemoApp {
         self.status_line = self.tr("saved", "保存済み").to_string();
     }
 
+    fn discard_pending_editor_edits(&mut self) {
+        if self.dirty_since_ms.is_none() {
+            return;
+        }
+        let Some(selected_id) = self.state.selected_note_id.clone() else {
+            return;
+        };
+        if selected_id == CLIP_HISTORY_NOTE_ID {
+            return;
+        }
+        let Some(note) = self
+            .state
+            .notes
+            .iter()
+            .find(|note| note.id == selected_id)
+            .cloned()
+        else {
+            return;
+        };
+        if note.deleted {
+            return;
+        }
+
+        self.editor_title = note.title;
+        self.editor_body = note.body;
+        self.editor_tags = note.tags.join(" ");
+        self.dirty_since_ms = None;
+        self.find_active_match = None;
+        self.status_line = self.tr("edit canceled", "入力を取り消しました").to_string();
+    }
+
     fn autosave_if_needed(&mut self) {
         let Some(dirty_since_ms) = self.dirty_since_ms else {
             return;
@@ -1283,6 +1314,7 @@ impl WebMemoApp {
             menu_shortcut,
             shortcuts_shortcut,
             close_find_shortcut,
+            cancel_edit_shortcut,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             let alt_only =
@@ -1314,6 +1346,7 @@ impl WebMemoApp {
                 cmd && i.key_pressed(egui::Key::Comma),
                 cmd && i.key_pressed(egui::Key::Slash),
                 self.show_find_replace && i.key_pressed(egui::Key::Escape),
+                !self.show_find_replace && i.key_pressed(egui::Key::Escape),
             )
         });
 
@@ -1388,6 +1421,9 @@ impl WebMemoApp {
         }
         if close_find_shortcut {
             self.close_find_replace();
+        }
+        if cancel_edit_shortcut {
+            self.discard_pending_editor_edits();
         }
     }
 
@@ -2996,6 +3032,14 @@ fn draw_shortcuts_grid(app: &WebMemoApp, ui: &mut egui::Ui) {
             shortcut_row(ui, app.tr("New note", "新規メモ"), "Ctrl/Cmd+Alt+N");
             shortcut_row(ui, app.tr("Find in note", "本文検索"), "Ctrl/Cmd+F");
             shortcut_row(ui, app.tr("Find / Replace", "検索/置換"), "Ctrl/Cmd+H");
+            shortcut_row(
+                ui,
+                app.tr(
+                    "Close find or cancel unsaved input",
+                    "検索を閉じる / 未保存入力を取り消す",
+                ),
+                "Esc",
+            );
             shortcut_row(
                 ui,
                 app.tr("Toggle Markdown preview", "Markdown プレビュー切替"),
